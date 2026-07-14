@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olma.dev/schemas/agent_task.schema.json",
+  "title": "AgentTask",
+  "description": "Validated task the Prompt Layer emits to the Orchestrator (instructions.md §9). Carries the signed TASK JWT with the allowed-tools set; the MCP Gateway re-verifies it (defense in depth, §9.4/§13).",
+  "type": "object",
+  "required": ["task_id", "conversation_id", "user_id", "org_id", "class", "task_jwt"],
+  "additionalProperties": true,
+  "properties": {
+    "task_id": { "type": "string", "description": "task_01H..." },
+    "conversation_id": { "type": "string" },
+    "user_id": { "type": "string" },
+    "org_id": { "type": "string" },
+    "class": { "type": "string", "enum": ["chat_simple", "task_agentique"] },
+    "origin": { "type": "string", "enum": ["interactive", "scheduled"], "default": "interactive" },
+    "plan": {
+      "type": "array",
+      "description": "3-7 high-level steps (§9.2); the agent may revise but this frames execution.",
+      "items": { "type": "object", "required": ["step"], "properties": {
+        "step": { "type": "string" }, "done": { "type": "boolean", "default": false } } }
+    },
+    "allowed_tools": { "type": "array", "items": { "type": "string" },
+      "description": "Tools this turn may call, computed from tool_policies (§9.4)." },
+    "approval_tools": { "type": "array", "items": { "type": "string" },
+      "description": "Tools that require a human approval before executing." },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "max_tokens": { "type": "integer", "minimum": 0 },
+        "max_seconds": { "type": "integer", "minimum": 0 },
+        "max_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "model": { "type": "string", "description": "Resolved by routing (§9.5 / Annexe H)." },
+    "agent_profile": { "type": "string", "enum": ["dev", "data-analyst", "ops", "generalist"] },
+    "task_jwt": { "type": "string", "description": "Signed TASK JWT (sub, allowed_tools, approval_tools, exp) — §13.4." },
+    "on_behalf_of": { "type": "string", "description": "Team mode (§3.2): requester identity when sub=agent-org." },
+    "locale": { "type": "string" }
+  }
+}

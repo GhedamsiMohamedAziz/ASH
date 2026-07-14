@@ -1,0 +1,8 @@
+{
+  "name": "@olma/mcp-scheduler",
+  "version": "0.1.0",
+  "description": "Axone Scheduler MCP façade (instructions.md §14.1, §15)",
+  "type": "module",
+  "scripts": { "test": "node --test test/scheduler.test.ts" },
+  "engines": { "node": ">=23" }
+}

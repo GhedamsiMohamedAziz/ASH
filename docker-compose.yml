@@ -1,0 +1,116 @@
+# Local development stack — instructions.md §22.2
+#
+# Two tiers:
+#   • data tier (default)  — postgres, redis, nats, vault, trigger.dev.
+#                            `docker compose up` brings these up today.
+#   • apps tier (profile)  — platform services; enabled once their Dockerfiles
+#                            exist:  `docker compose --profile apps up --build`.
+#
+# In dev, crons only fire while the automation-service `trigger dev` CLI runs —
+# no phantom fires (§22.2).
+
+name: olma
+
+x-env: &pg-env
+  POSTGRES_USER: olma
+  POSTGRES_PASSWORD: olma
+  POSTGRES_DB: olma
+
+services:
+  # ------------------------------------------------------------- data tier
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment: *pg-env
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro   # apply DDL on first boot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olma -d olma"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+    command: ["redis-server", "--save", "60", "1"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.10
+    command: ["-js", "-m", "8222"]                        # JetStream + monitoring
+    ports: ["4222:4222", "8222:8222"]
+
+  vault:
+    image: hashicorp/vault:1.16
+    cap_add: ["IPC_LOCK"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports: ["8200:8200"]
+
+  # --- Trigger.dev self-hosted (simplified dev stack) ---
+  trigger:
+    image: ghcr.io/triggerdotdev/trigger.dev:v4
+    ports: ["8030:3000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_started }
+
+  # ------------------------------------------------------------- apps tier
+  # Enabled with:  docker compose --profile apps up --build
+  backend-core:
+    profiles: ["apps"]
+    build: ./services/backend-core
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_started }
+      nats:     { condition: service_started }
+
+  prompt-layer:
+    profiles: ["apps"]
+    build: ./services/prompt-layer
+    depends_on:
+      nats: { condition: service_started }
+
+  orchestrator:
+    profiles: ["apps"]
+    build: ./services/orchestrator
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+
+  mcp-gateway:
+    profiles: ["apps"]
+    build: ./services/mcp-gateway
+    ports: ["8443:8443"]
+
+  github-mcp:
+    profiles: ["apps"]
+    build: ./services/mcp-servers/github
+
+  browser-mcp:
+    profiles: ["apps"]
+    build: ./services/mcp-servers/browser
+
+  scheduler-mcp:
+    profiles: ["apps"]
+    build: ./services/mcp-servers/scheduler
+
+  automation-service:
+    profiles: ["apps"]
+    build: ./services/automation-service
+    depends_on:
+      trigger: { condition: service_started }
+
+  web:
+    profiles: ["apps"]
+    build: ./apps/web
+    ports: ["3000:3000"]
+
+volumes:
+  pgdata:

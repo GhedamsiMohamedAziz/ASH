@@ -1,0 +1,18 @@
+# gitleaks config (instructions.md §17, §22.3 CI secret scan)
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Docs examples + test fixtures (not real secrets)"
+paths = [
+  '''instructions\.md''',                    # blueprint contains illustrative examples
+  '''.*/tests?/.*''',                        # test files use fake tokens (ghp_aaaa…, EICAR)
+  '''.*test_.*\.py''',
+  '''.*\.test\.ts''',
+  '''services/.*/keys/.*''',                 # runtime dev keys (gitignored)
+  '''evals/.*''',                            # adversarial corpus
+]
+regexes = [
+  '''ghp_a{36}''',                           # obvious fake GitHub token in tests
+  '''AKIAA{16}''',                           # obvious fake AWS key in tests
+]

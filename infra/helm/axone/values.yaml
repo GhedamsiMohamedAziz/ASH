@@ -1,0 +1,8 @@
+# Per-env values (dev/staging/prod separated, §22.1). Resource requests/limits set
+# per service; HPA on CPU + NATS queue depth for stateless services (§23).
+global: { imageTag: "0.1.0", env: "staging" }
+backendCore:  { replicas: 3, resources: { requests: { cpu: "500m", memory: "512Mi" } } }
+promptLayer:  { replicas: 3 }
+orchestrator: { replicas: 2 } # active/passive leader election (§23)
+mcpGateway:   { replicas: 3 }
+sandboxes:    { runtimeClass: gvisor, nodeSelector: { pool: sandbox } }

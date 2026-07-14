@@ -1,0 +1,6 @@
+# Dogfooding org (instructions.md §24.8): the platform team runs on its own org as
+# living QA. Seeded like any org; the team uses the agent daily; issues feed back.
+org: { id: org-platform, name: "Axone Platform", plan: enterprise }
+connectors: [github, slack, m365]   # org service credentials
+policies: seed  # db/migrations/0003_seed_policies.sql
+budget: { monthly_usd: 2000 }

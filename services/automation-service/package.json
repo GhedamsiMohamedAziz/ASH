@@ -1,0 +1,8 @@
+{
+  "name": "@olma/automation-service",
+  "version": "0.1.0",
+  "description": "Axone automation-service — jobs + delivery (instructions.md §15)",
+  "type": "module",
+  "scripts": { "test": "node --test test/jobs.test.ts test/delivery.test.ts" },
+  "engines": { "node": ">=23" }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "generalist",
+  "description": "Default profile; office & comms.",
+  "default_model": "eco",
+  "tools": [
+    "m365",
+    "slack",
+    "notion",
+    "browser"
+  ]
+}

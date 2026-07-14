@@ -1,0 +1,9 @@
+# Observability stack (instructions.md §19): OTel + Prometheus + Grafana + Loki + Tempo.
+# Traces propagate via traceparent (shared jwt/telemetry libs already emit it).
+otelCollector: { enabled: true, receivers: [otlp], exporters: [prometheus, tempo, loki] }
+prometheus:    { enabled: true, retention: "15d", ruleFiles: ["slo-alerts.yaml"] }
+grafana:       { enabled: true, dashboards: [api-latency, sandbox-pool, cron-health, cost-by-org] }
+loki:          { enabled: true }   # JSON access logs (§8.1)
+tempo:         { enabled: true }   # distributed traces
+alertmanager:  { enabled: true, routes: [{ severity: page, receiver: pagerduty },
+                                          { severity: ticket, receiver: slack-digest }] }

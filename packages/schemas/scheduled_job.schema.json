@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olma.dev/schemas/scheduled_job.schema.json",
+  "title": "ScheduledJob",
+  "description": "An agent-created automation (cron). Mirrors the scheduled_jobs table (instructions.md §16.1). scheduled_jobs is the business source of truth; Trigger.dev is the execution engine (§16.2). Permissions are re-evaluated at fire time, never frozen (§9.4, ADR 006).",
+  "type": "object",
+  "required": ["id", "user_id", "org_id", "name", "prompt", "cron", "delivery", "per_run_budget", "created_by", "status"],
+  "additionalProperties": true,
+  "properties": {
+    "id": { "type": "string", "description": "job_01H..." },
+    "user_id": { "type": "string" },
+    "org_id": { "type": "string" },
+    "name": { "type": "string" },
+    "prompt": { "type": "string", "description": "Immutable snapshot; editing bumps prompt_version + re-approval." },
+    "prompt_version": { "type": "integer", "minimum": 1, "default": 1 },
+    "agent_profile": { "type": "string", "default": "generalist" },
+    "cron": { "type": "string", "description": "5-field cron, e.g. '0 9 * * 1' (no seconds)." },
+    "timezone": { "type": "string", "default": "UTC" },
+    "delivery": {
+      "type": "object",
+      "required": ["channel", "target"],
+      "properties": {
+        "channel": { "type": "string", "enum": ["teams", "slack", "email", "webhook"] },
+        "target": { "type": "string" }
+      }
+    },
+    "per_run_budget": {
+      "type": "object",
+      "required": ["max_cost_usd", "max_seconds"],
+      "properties": {
+        "max_cost_usd": { "type": "number", "minimum": 0 },
+        "max_seconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "monthly_budget_usd": { "type": ["number", "null"], "minimum": 0 },
+    "on_approval_needed": { "type": "string", "enum": ["fail_fast", "use_pre_approved"], "default": "fail_fast" },
+    "pre_approved_tools": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "status": { "type": "string", "enum": ["draft", "pending_approval", "active", "paused", "deleted"] },
+    "pause_reason": { "type": ["string", "null"] },
+    "consecutive_failures": { "type": "integer", "minimum": 0, "default": 0 },
+    "created_by": { "type": "string", "enum": ["agent", "user"] },
+    "approved_by": { "type": ["string", "null"] },
+    "next_run_at": { "type": ["string", "null"], "format": "date-time" },
+    "last_run_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

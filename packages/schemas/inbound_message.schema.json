@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olma.dev/schemas/inbound_message.schema.json",
+  "title": "InboundMessage",
+  "description": "Normalized inbound event. Every channel adapter AND the automation-service emit this (instructions.md §7.4). Additive evolution only; consumers are tolerant readers.",
+  "type": "object",
+  "required": ["schema_version", "message_id", "user_id", "org_id", "channel", "conversation_id", "text", "ts"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.2" },
+    "message_id": { "type": "string", "description": "msg_01H..." },
+    "user_id": { "type": "string", "description": "usr_..." },
+    "org_id": { "type": "string" },
+    "channel": { "type": "string", "enum": ["teams", "slack", "web", "scheduler"] },
+    "channel_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "conversation_id": { "type": "string" },
+        "thread_ts": { "type": "string" },
+        "activity_id": { "type": "string" },
+        "job_id": { "type": "string" },
+        "scheduled_for": { "type": "string", "format": "date-time" }
+      }
+    },
+    "conversation_id": { "type": "string" },
+    "text": { "type": "string" },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["s3_key", "mime", "name"],
+        "properties": {
+          "s3_key": { "type": "string" },
+          "mime": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "locale": { "type": "string", "examples": ["fr-FR", "en-US", "ar-TN"] },
+    "idempotency_key": { "type": "string" },
+    "ts": { "type": "string", "format": "date-time" }
+  }
+}

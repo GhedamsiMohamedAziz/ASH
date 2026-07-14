@@ -1,0 +1,9 @@
+{
+  "name": "ops",
+  "description": "Ops tasks, monitoring, incident triage.",
+  "default_model": "eco",
+  "tools": [
+    "github",
+    "browser"
+  ]
+}

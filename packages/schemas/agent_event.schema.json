@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olma.dev/schemas/agent_event.schema.json",
+  "title": "AgentEvent",
+  "description": "Streamed output event consumed by every channel (instructions.md §7.4, §8.3). Each carries a monotonic per-conversation `seq` for gap-free WebSocket replay.",
+  "type": "object",
+  "required": ["type", "seq"],
+  "additionalProperties": true,
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "agent.thinking",
+        "agent.text.delta",
+        "agent.tool.call",
+        "agent.tool.result",
+        "agent.approval.needed",
+        "agent.file.created",
+        "agent.cron.created",
+        "agent.escalated",
+        "agent.done",
+        "agent.error"
+      ]
+    },
+    "seq": { "type": "integer", "minimum": 0, "description": "monotonic per conversation" },
+    "data": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Shape depends on `type`. Examples: tool.call → {tool, args_summary, requires_approval}; cron.created → {job_id, human_schedule, next_run_at}; escalated → {from, to}; done → {usage, cost_usd}; error → {code (taxonomy §21), message}."
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "$comment": "Declarative NATS JetStream stream definitions (instructions.md §8.2). Provisioned idempotently by tools/provision_nats.py. One stream per logical domain; subjects use '>' for multi-token wildcards (e.g. per-conversation event subjects).",
+  "streams": [
+    {
+      "name": "INBOUND",
+      "description": "Inbound normalized messages from all channel adapters + the automation-service (§7.4).",
+      "subjects": ["inbound.messages", "inbound.messages.>"],
+      "retention": "limits",
+      "storage": "file",
+      "max_age_seconds": 604800,
+      "max_msgs": 1000000,
+      "num_replicas": 1
+    },
+    {
+      "name": "AGENT_EVENTS",
+      "description": "Per-conversation AgentEvent stream. Replay source for gap-free WebSocket resume via last_seq (§8.3).",
+      "subjects": ["agent.events.>"],
+      "retention": "limits",
+      "storage": "file",
+      "max_age_seconds": 604800,
+      "max_msgs": 5000000,
+      "num_replicas": 1
+    },
+    {
+      "name": "ORCHESTRATOR",
+      "description": "Commands to the orchestrator (create/dispatch/cancel sandbox turns, §10.3).",
+      "subjects": ["orchestrator.commands", "orchestrator.commands.>"],
+      "retention": "limits",
+      "storage": "file",
+      "max_age_seconds": 86400,
+      "max_msgs": 500000,
+      "num_replicas": 1
+    },
+    {
+      "name": "AUTOMATION",
+      "description": "Automation lifecycle events (cron create/pause/resume/run, §15).",
+      "subjects": ["automation.lifecycle", "automation.lifecycle.>"],
+      "retention": "limits",
+      "storage": "file",
+      "max_age_seconds": 2592000,
+      "max_msgs": 1000000,
+      "num_replicas": 1
+    }
+  ]
+}

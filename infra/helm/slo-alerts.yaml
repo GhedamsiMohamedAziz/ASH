@@ -1,0 +1,71 @@
+# SLO alerting rules (instructions.md §19, §24.6, Annexe A). Bi-level policy:
+# `page` (wakes someone) is reserved for user-visible SLO violations — max 5,
+# each actionable with a runbook. Everything else is `ticket` (daily digest).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: axone-slo
+  namespace: observability
+spec:
+  groups:
+    - name: page
+      rules:
+        # 1. API down.
+        - alert: ApiDown
+          expr: up{job="backend-core"} == 0
+          for: 2m
+          labels: { severity: page }
+          annotations:
+            runbook: docs/runbooks/01-llm-provider-down.md
+            summary: "backend-core is down"
+        # 2. First-token P95 sustained > 30s (user-visible latency).
+        - alert: FirstTokenSlow
+          expr: histogram_quantile(0.95, rate(agent_first_token_seconds_bucket[5m])) > 30
+          for: 10m
+          labels: { severity: page }
+          annotations: { summary: "P95 first token > 30s sustained" }
+        # 3. Warm pool empty AND queue growing.
+        - alert: SandboxStarvation
+          expr: sandbox_warm_pool == 0 and rate(sandbox_queue_depth[5m]) > 0
+          for: 5m
+          labels: { severity: page }
+          annotations: { runbook: docs/runbooks/04-sandbox-node-saturated.md }
+        # 4. Postgres primary down.
+        - alert: PostgresPrimaryDown
+          expr: pg_up{role="primary"} == 0
+          for: 1m
+          labels: { severity: page }
+          annotations: { runbook: docs/runbooks/07-postgres-failover.md }
+        # 5. Vault sealed.
+        - alert: VaultSealed
+          expr: vault_core_unsealed == 0
+          for: 1m
+          labels: { severity: page }
+          annotations: { runbook: docs/runbooks/03-vault-sealed.md }
+
+    - name: ticket
+      rules:
+        # Scheduled-run failure rate over 1h (Annexe A: alert if > 0.05).
+        - alert: CronFailureRate
+          expr: rate(scheduled_runs_failed_total[1h]) / rate(scheduled_runs_total[1h]) > 0.05
+          for: 15m
+          labels: { severity: ticket }
+        # Cron fire delay P95 (Annexe A: alert if > 120s).
+        - alert: CronFireDelay
+          expr: histogram_quantile(0.95, rate(cron_fire_delay_seconds_bucket[10m])) > 120
+          for: 10m
+          labels: { severity: ticket }
+        # Org budget at 80%.
+        - alert: OrgBudgetHigh
+          expr: org_month_spend_usd / org_month_budget_usd > 0.80
+          labels: { severity: ticket }
+        # Cache hit ratio below 60% (§9.6 investigation trigger).
+        - alert: CacheHitLow
+          expr: llm_cache_hit_ratio < 0.60
+          for: 30m
+          labels: { severity: ticket }
+        # DLQ non-empty after redrive.
+        - alert: DlqNotEmpty
+          expr: nats_dlq_messages > 0
+          for: 30m
+          labels: { severity: ticket }

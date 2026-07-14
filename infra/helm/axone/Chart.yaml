@@ -1,0 +1,6 @@
+apiVersion: v2
+name: axone
+description: Axone platform Helm chart (instructions.md §22.1)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

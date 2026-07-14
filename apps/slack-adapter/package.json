@@ -1,0 +1,8 @@
+{
+  "name": "@olma/slack-adapter",
+  "version": "0.1.0",
+  "description": "Axone Slack adapter — signature verify, dedup, normalize (instructions.md §7.2)",
+  "type": "module",
+  "scripts": { "test": "node --test test/adapter.test.ts", "start": "node src/server.ts" },
+  "engines": { "node": ">=23" }
+}

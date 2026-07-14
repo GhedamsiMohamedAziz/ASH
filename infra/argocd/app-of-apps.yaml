@@ -1,0 +1,12 @@
+# GitOps root (instructions.md §22.1, §24.5): a deployment = a commit, a rollback =
+# a revert; no kubectl edit in prod. Staging auto-syncs; prod is manual-approval
+# with a 10% canary on backend-core (§22.3 step 10).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: axone, namespace: argocd }
+spec:
+  project: default
+  source: { repoURL: "https://github.com/olma/platform", path: infra/helm/axone, targetRevision: main }
+  destination: { server: "https://kubernetes.default.svc" }
+  syncPolicy:
+    automated: { prune: true, selfHeal: true } # staging; prod overlay disables automated

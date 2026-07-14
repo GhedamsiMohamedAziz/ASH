@@ -1,0 +1,9 @@
+{
+  "name": "data-analyst",
+  "description": "Data analysis, queries, charts.",
+  "default_model": "frontier",
+  "tools": [
+    "database",
+    "browser"
+  ]
+}

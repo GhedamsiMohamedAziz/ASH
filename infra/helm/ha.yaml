@@ -1,0 +1,8 @@
+# HA topology (instructions.md §23). Multi-AZ; stateful failover automated.
+postgres:     { operator: cloudnative-pg, instances: 3, primaryFailover: automatic } # 1 primary + 2 replicas
+nats:         { cluster: true, replicas: 3 }   # 3-node JetStream quorum
+orchestrator: { leaderElection: true, replicas: 2 }  # active/passive
+redis:        { sentinel: true }
+multiAZ:      true
+hpa:          { stateless: { metric: [cpu, nats_queue_depth], min: 2, max: 10 } }
+dr:           { rpoMinutes: 15, rtoHours: 1, walArchiveS3: true, resyncScript: tools/resync_schedules.py }

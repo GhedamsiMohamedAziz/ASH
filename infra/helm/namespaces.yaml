@@ -1,0 +1,57 @@
+# K8s namespaces + node topology (instructions.md §22.1). Labels drive the
+# NetworkPolicy namespaceSelectors. The sandboxes namespace runs on a dedicated,
+# tainted node pool with the gVisor RuntimeClass (ADR 002).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress
+  labels: { name: ingress }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: core
+  labels: { name: core }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orchestration
+  labels: { name: orchestration }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandboxes
+  labels: { name: sandboxes }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp
+  labels: { name: mcp }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: automation
+  labels: { name: automation }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+  labels: { name: data }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels: { name: observability }
+---
+# gVisor runtime for sandboxes (ADR 002, §11.2).
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc

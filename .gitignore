@@ -1,0 +1,38 @@
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Vector DB store (rebuild with vectordb/ingest.py)
+vectordb/chroma/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# Go
+/bin/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# OMC operational state
+.omc/
+
+# Runtime-generated dev keys (auth-service RS256) — never commit
+services/*/keys/
+*.pem

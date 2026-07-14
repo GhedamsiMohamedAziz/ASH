@@ -1,0 +1,34 @@
+# llm-proxy config — model tiers, price table, fallbacks (instructions.md §9.5, Annexe H).
+#
+# Provider-swap story (§G.4 / §26): the same logical tiers route to Anthropic direct,
+# Amazon Bedrock, or Microsoft Foundry by editing `provider` + the `model` strings here —
+# NOT by changing code. StubBackend is the offline dev/test backend (no API key, no
+# network); production sets `provider: litellm` (or `anthropic`) and swaps StubBackend for
+# the real client behind the identical Backend interface.
+
+provider: stub          # stub | litellm | anthropic | bedrock | foundry  (swap here, not in code)
+
+# Logical tier -> concrete model, with an automatic fallback model per tier (§9.5).
+# Defaults follow Annexe H / the current Anthropic lineup.
+tiers:
+  eco:
+    model: claude-haiku-4-5
+    fallback: claude-sonnet-4-6      # escalate on primary incident (H.4)
+  frontier:
+    model: claude-opus-4-8
+    fallback: claude-sonnet-4-6      # cheaper resilient fallback on incident/quota
+
+# Per-org overrides win over the default tier map ("configurable par org", §9.5).
+# Example: a sovereign on-prem org pins every tier to an open-weights model (Annexe H.3).
+org_overrides:
+  org_sovereign:
+    eco: qwen-3-coder
+    frontier: qwen-3-coder
+
+# Price table: USD per 1M tokens (input / output). Single source of truth for cost
+# accounting and budget enforcement (§9.5 usage/cost tracking). Directional mid-2026 values.
+prices:
+  claude-haiku-4-5:  { input: 1.0,  output: 5.0 }
+  claude-sonnet-4-6: { input: 3.0,  output: 15.0 }
+  claude-opus-4-8:   { input: 5.0,  output: 25.0 }   # real Anthropic price (was 15/75 — 3x too high)
+  qwen-3-coder:      { input: 0.30, output: 1.50 }

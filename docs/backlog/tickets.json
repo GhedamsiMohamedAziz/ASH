@@ -1,0 +1,2251 @@
+[
+  {
+    "id": "AX-001",
+    "phase": "P0",
+    "title": "Monorepo skeleton & tooling",
+    "description": "Create the §27 directory layout with per-service docs, root README, Makefile, .gitignore, .env.example.",
+    "acceptance": [
+      "Tree matches §27",
+      "`make help` lists targets",
+      "READMEs describe role/stack/phase"
+    ],
+    "deps": [],
+    "estimate": "M",
+    "labels": [
+      "infra",
+      "dx"
+    ],
+    "spec": "§27",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-002",
+    "phase": "P0",
+    "title": "Event schemas + codegen (schemas package)",
+    "description": "Author JSON Schemas for InboundMessage, AgentEvent, AgentTask, ScheduledJob; wire TS + Pydantic codegen.",
+    "acceptance": [
+      "4 schemas validate",
+      "TS types + Pydantic models generated in CI",
+      "tolerant-reader + vN-1 compat test"
+    ],
+    "deps": [
+      "AX-001"
+    ],
+    "estimate": "M",
+    "labels": [
+      "schemas",
+      "contracts"
+    ],
+    "spec": "§7.4, §9",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-003",
+    "phase": "P0",
+    "title": "Shared error taxonomy (errors package)",
+    "description": "Encode the §21 error taxonomy once, exported to TS + Py, used by the unified error envelope.",
+    "acceptance": [
+      "All E_* codes enumerated",
+      "Envelope {error:{code,message,trace_id,retry_after}} shared",
+      "localized messages fr/en/ar"
+    ],
+    "deps": [
+      "AX-002"
+    ],
+    "estimate": "S",
+    "labels": [
+      "errors",
+      "contracts"
+    ],
+    "spec": "§8.3, §21",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-004",
+    "phase": "P0",
+    "title": "DB migrations + migration tooling",
+    "description": "Ship 0001_init + 0002_automations and adopt Atlas (expand/contract, destructive-in-release = STOP).",
+    "acceptance": [
+      "Migrations apply on clean Postgres (17 tables, pgvector, HNSW, partitioned audit)",
+      "Atlas lint in CI",
+      "rollback documented"
+    ],
+    "deps": [
+      "AX-001"
+    ],
+    "estimate": "M",
+    "labels": [
+      "db"
+    ],
+    "spec": "§16.1, §16.3, §22.3",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-005",
+    "phase": "P0",
+    "title": "Dev docker-compose stack",
+    "description": "Compose for postgres(pgvector)/redis/nats/vault/trigger.dev with healthchecks; apps behind a profile.",
+    "acceptance": [
+      "`docker compose up` boots data tier healthy",
+      "migrations auto-apply",
+      "`--profile apps` builds services"
+    ],
+    "deps": [
+      "AX-004"
+    ],
+    "estimate": "S",
+    "labels": [
+      "infra",
+      "dx"
+    ],
+    "spec": "§22.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-006",
+    "phase": "P0",
+    "title": "auth-service (OIDC, JWT, JWKS)",
+    "description": "OIDC login (Entra ID / Slack), signed session JWT (15 min), JWKS endpoint, key rotation.",
+    "acceptance": [
+      "OIDC round-trip works",
+      "JWKS served + rotated",
+      "fail-closed on invalid/expired token"
+    ],
+    "deps": [
+      "AX-002"
+    ],
+    "estimate": "L",
+    "labels": [
+      "auth",
+      "security"
+    ],
+    "spec": "§5, §8.1, §13.4",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-007",
+    "phase": "P0",
+    "title": "Shared runtime libs (bus, OTel, JWT, idempotency)",
+    "description": "shared-ts + shared-py: NATS client, OpenTelemetry setup, JWT verify, idempotency helpers.",
+    "acceptance": [
+      "Bus publish/subscribe helper",
+      "traceparent propagation",
+      "idempotency-key store helper"
+    ],
+    "deps": [
+      "AX-002"
+    ],
+    "estimate": "M",
+    "labels": [
+      "shared",
+      "observability"
+    ],
+    "spec": "§5, §8.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-008",
+    "phase": "P0",
+    "title": "CI pipeline skeleton",
+    "description": "GitHub Actions: lint/typecheck (ruff/mypy, eslint/tsc, golangci-lint), unit tests, contract tests.",
+    "acceptance": [
+      "PR runs lint+test+contracts",
+      "coverage ≥80% decision code gate",
+      "cross-lang schema compat check"
+    ],
+    "deps": [
+      "AX-002",
+      "AX-003"
+    ],
+    "estimate": "M",
+    "labels": [
+      "ci",
+      "dx"
+    ],
+    "spec": "§22.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-009",
+    "phase": "P0",
+    "title": "End-to-end JWT smoke (exit criterion)",
+    "description": "Prove identity flows adapter → signed JWT → a protected backend route end-to-end.",
+    "acceptance": [
+      "`docker compose up` functional",
+      "JWT minted and validated across a request",
+      "P0 exit gate green"
+    ],
+    "deps": [
+      "AX-005",
+      "AX-006",
+      "AX-007"
+    ],
+    "estimate": "S",
+    "labels": [
+      "milestone"
+    ],
+    "spec": "§29 P0",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-010",
+    "phase": "P0",
+    "title": "NATS JetStream provisioning",
+    "description": "Declare streams/subjects: inbound.messages, agent.events.*, orchestrator.commands, automation.lifecycle.",
+    "acceptance": [
+      "Streams created with retention/replay config",
+      "replay verified",
+      "consumer groups documented"
+    ],
+    "deps": [
+      "AX-005"
+    ],
+    "estimate": "S",
+    "labels": [
+      "infra",
+      "bus"
+    ],
+    "spec": "§8.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-011",
+    "phase": "P1",
+    "title": "backend-core REST+WS API",
+    "description": "FastAPI conversations/messages/stream/approve/cancel/me with idempotency and §8.3 replay protocol.",
+    "acceptance": [
+      "All /api/v1 routes per §8.2",
+      "202 + Idempotency-Key semantics",
+      "WS seq/last_seq replay, gap-free"
+    ],
+    "deps": [
+      "AX-002"
+    ],
+    "estimate": "L",
+    "labels": [
+      "backend-core"
+    ],
+    "spec": "§8.2, §8.3",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-012",
+    "phase": "P1",
+    "title": "backend-core ↔ NATS + Postgres",
+    "description": "Replace in-memory store with asyncpg; publish inbound to bus and bridge AgentEvents back to WS.",
+    "acceptance": [
+      "Conversations/messages persisted",
+      "inbound published to NATS",
+      "events consumed and streamed"
+    ],
+    "deps": [
+      "AX-011",
+      "AX-010",
+      "AX-004"
+    ],
+    "estimate": "L",
+    "labels": [
+      "backend-core",
+      "db",
+      "bus"
+    ],
+    "spec": "§8.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-013",
+    "phase": "P1",
+    "title": "prompt-layer (minimal)",
+    "description": "Stateless service: classify chat_simple vs task_agentique, pass-through routing, emit signed AgentTask.",
+    "acceptance": [
+      "Classification <300ms via eco model",
+      "AgentTask + TASK JWT emitted",
+      "scheduler channel same pipeline"
+    ],
+    "deps": [
+      "AX-007",
+      "AX-006"
+    ],
+    "estimate": "L",
+    "labels": [
+      "prompt-layer"
+    ],
+    "spec": "§9, §9.2, §9.5",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-014",
+    "phase": "P1",
+    "title": "orchestrator sandbox lifecycle (Go)",
+    "description": "Go service: sandbox state machine (create/warm/active/hibernate/kill), gRPC API, turn dispatch.",
+    "acceptance": [
+      "State machine per §10.1",
+      "gRPC create/dispatch/cancel",
+      "leader election stub"
+    ],
+    "deps": [
+      "AX-010"
+    ],
+    "estimate": "XL",
+    "labels": [
+      "orchestrator"
+    ],
+    "spec": "§10",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-015",
+    "phase": "P1",
+    "title": "Hardened sandbox image",
+    "description": "OpenCode Docker image: rootless, gVisor RuntimeClass, no egress except MCP Gateway + llm-proxy.",
+    "acceptance": [
+      "Non-root user",
+      "egress locked to gateway/proxy",
+      "gVisor runtime verified"
+    ],
+    "deps": [
+      "AX-001"
+    ],
+    "estimate": "L",
+    "labels": [
+      "sandbox",
+      "security"
+    ],
+    "spec": "§11.1, §11.2, ADR 002",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-016",
+    "phase": "P1",
+    "title": "OpenCode agent + profiles",
+    "description": "Run OpenCode in server mode inside the sandbox; load dev/data/ops/generalist profiles; MCP client.",
+    "acceptance": [
+      "Agent answers a turn",
+      "profiles switch tools/model",
+      "events stream to orchestrator"
+    ],
+    "deps": [
+      "AX-015",
+      "AX-014"
+    ],
+    "estimate": "L",
+    "labels": [
+      "sandbox",
+      "agent"
+    ],
+    "spec": "§12, ADR 009",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-017",
+    "phase": "P1",
+    "title": "MCP Gateway core",
+    "description": "Single AuthZ/secret-injection/DLP/audit point: verify TASK JWT, tool routing, audit each call.",
+    "acceptance": [
+      "TASK JWT verified (allowed_tools)",
+      "tool call → server routed",
+      "every call in audit_log"
+    ],
+    "deps": [
+      "AX-006"
+    ],
+    "estimate": "XL",
+    "labels": [
+      "mcp-gateway",
+      "security"
+    ],
+    "spec": "§13.1, ADR 001",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-018",
+    "phase": "P1",
+    "title": "GitHub MCP server",
+    "description": "Code search/read, branches, commits, PRs, issues, merge (approval-gated).",
+    "acceptance": [
+      "Read + create PR works",
+      "merge behind require_approval",
+      "Co-authored-by/Requested-by on commits"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "L",
+    "labels": [
+      "mcp-server",
+      "github"
+    ],
+    "spec": "§14",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-019",
+    "phase": "P1",
+    "title": "Web app chat (streaming)",
+    "description": "React chat mapping AgentEvent → UI (deltas, tool lines, approval cards, done/cost); WS token streaming.",
+    "acceptance": [
+      "Token-by-token streaming",
+      "AgentEvent contract rendered per §4.3",
+      "reconnect resumes via last_seq"
+    ],
+    "deps": [
+      "AX-011"
+    ],
+    "estimate": "L",
+    "labels": [
+      "web"
+    ],
+    "spec": "§4.3, §7.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-020",
+    "phase": "P1",
+    "title": "llm-proxy (minimal)",
+    "description": "LiteLLM config with a single frontier + eco model, budget headers, request logging.",
+    "acceptance": [
+      "Proxy routes to model",
+      "usage/cost captured",
+      "timeout+retry configured"
+    ],
+    "deps": [
+      "AX-001"
+    ],
+    "estimate": "M",
+    "labels": [
+      "llm-proxy"
+    ],
+    "spec": "§9.5, Annexe H",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-021",
+    "phase": "P1",
+    "title": "Persistent workspace volume",
+    "description": "Per-user /workspace volume with .agent/ notes; survives sandbox kill/restart.",
+    "acceptance": [
+      "Volume persists across restarts",
+      "notes readable next session",
+      "sandbox table tracks volume_id"
+    ],
+    "deps": [
+      "AX-014"
+    ],
+    "estimate": "M",
+    "labels": [
+      "sandbox",
+      "storage"
+    ],
+    "spec": "§11.3, §4 (Principle 4)",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-022",
+    "phase": "P1",
+    "title": "P1 demo: GitHub task from web (exit criterion)",
+    "description": "End-to-end: web message → sandbox → GitHub MCP task with live streaming.",
+    "acceptance": [
+      "Full GitHub task from web",
+      "streaming visible",
+      "P1 exit gate green"
+    ],
+    "deps": [
+      "AX-012",
+      "AX-013",
+      "AX-016",
+      "AX-018",
+      "AX-019",
+      "AX-020"
+    ],
+    "estimate": "M",
+    "labels": [
+      "milestone"
+    ],
+    "spec": "§29 P1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-023",
+    "phase": "P2",
+    "title": "Teams adapter",
+    "description": "Bot Framework SDK v4: normalize activities → InboundMessage, SSO token exchange, Adaptive Cards, proactive.",
+    "acceptance": [
+      "Mention/DM handled",
+      "SSO account linking",
+      "proactive run result delivered"
+    ],
+    "deps": [
+      "AX-011"
+    ],
+    "estimate": "L",
+    "labels": [
+      "teams"
+    ],
+    "spec": "§7.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-024",
+    "phase": "P2",
+    "title": "Teams webhook JWT validation",
+    "description": "Validate Bot Framework JWT on every activity (aud/iss, 5-min clock skew), fail-closed.",
+    "acceptance": [
+      "Valid activity accepted",
+      "forged/expired rejected",
+      "OpenID metadata cached"
+    ],
+    "deps": [
+      "AX-023"
+    ],
+    "estimate": "S",
+    "labels": [
+      "teams",
+      "security"
+    ],
+    "spec": "§7.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-025",
+    "phase": "P2",
+    "title": "Slack adapter",
+    "description": "Bolt app: <3s ACK + 👀 reaction, InboundMessage publish, Block Kit cards, slash commands.",
+    "acceptance": [
+      "ACK <3s then async",
+      "Block Kit approval cards",
+      "/agent commands wired"
+    ],
+    "deps": [
+      "AX-011"
+    ],
+    "estimate": "L",
+    "labels": [
+      "slack"
+    ],
+    "spec": "§7.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-026",
+    "phase": "P2",
+    "title": "Slack signature verify + retry dedup",
+    "description": "HMAC signature check (5-min anti-replay) and dedup of Slack retries via event_id in Redis.",
+    "acceptance": [
+      "Bad signature rejected",
+      "retries deduped",
+      "replay window enforced"
+    ],
+    "deps": [
+      "AX-025"
+    ],
+    "estimate": "S",
+    "labels": [
+      "slack",
+      "security"
+    ],
+    "spec": "§7.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-027",
+    "phase": "P2",
+    "title": "Simple vs complex routing",
+    "description": "Fast classification path: chat_simple (no sandbox, eco LLM) vs task_agentique with milestones.",
+    "acceptance": [
+      "Simple mention answered without sandbox",
+      "complex shows plan+milestones",
+      "cost path per §25"
+    ],
+    "deps": [
+      "AX-013"
+    ],
+    "estimate": "M",
+    "labels": [
+      "prompt-layer",
+      "routing"
+    ],
+    "spec": "§7.2.1, §9.2",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-028",
+    "phase": "P2",
+    "title": "Mid-turn escalation",
+    "description": "chat_simple → task_agentique escalation emitting agent.escalated and waking the sandbox.",
+    "acceptance": [
+      "Escalation event emitted",
+      "sandbox woken on demand",
+      "UI shows 'looking in <tool>'"
+    ],
+    "deps": [
+      "AX-027",
+      "AX-014"
+    ],
+    "estimate": "M",
+    "labels": [
+      "prompt-layer"
+    ],
+    "spec": "§7.2.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-029",
+    "phase": "P2",
+    "title": "Account linking for unknown users",
+    "description": "Unlinked mention → ephemeral OIDC linking prompt; no processing before linkage.",
+    "acceptance": [
+      "Unknown user gets link",
+      "no action pre-link",
+      "identity persisted after link"
+    ],
+    "deps": [
+      "AX-006"
+    ],
+    "estimate": "M",
+    "labels": [
+      "auth"
+    ],
+    "spec": "§7.2, §7.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-030",
+    "phase": "P2",
+    "title": "Proactive notifications",
+    "description": "Store conversationReference (Teams) / channel refs; deliver async/long-task and scheduled results.",
+    "acceptance": [
+      "Proactive message sent",
+      "long-task '@user' ping on completion",
+      "refs persisted"
+    ],
+    "deps": [
+      "AX-023",
+      "AX-025"
+    ],
+    "estimate": "M",
+    "labels": [
+      "teams",
+      "slack"
+    ],
+    "spec": "§7.1, §7.2",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-031",
+    "phase": "P2",
+    "title": "P2 exit: same task from Teams & Slack",
+    "description": "Run the P1 task identically from Teams and Slack.",
+    "acceptance": [
+      "Task works from Teams",
+      "task works from Slack",
+      "P2 exit gate green"
+    ],
+    "deps": [
+      "AX-023",
+      "AX-025",
+      "AX-027"
+    ],
+    "estimate": "S",
+    "labels": [
+      "milestone"
+    ],
+    "spec": "§29 P2",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-032",
+    "phase": "P3",
+    "title": "Permissions engine (RBAC+ABAC)",
+    "description": "tool_policies matrix (org,role,tool_pattern)→allow/deny/require_approval; compute allowed_tools per turn.",
+    "acceptance": [
+      "Policy lookup fail-closed",
+      "allowed_tools signed into TASK JWT",
+      "gateway re-verifies (defense in depth)"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "L",
+    "labels": [
+      "permissions",
+      "security"
+    ],
+    "spec": "§9.4",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-033",
+    "phase": "P3",
+    "title": "Human approval flow (HITL)",
+    "description": "require_approval suspends the tool call, emits approval.needed, resolves via approve endpoint/card.",
+    "acceptance": [
+      "Approve/deny resolves call",
+      "pending stored in Redis with timeout",
+      "decision audited"
+    ],
+    "deps": [
+      "AX-032"
+    ],
+    "estimate": "L",
+    "labels": [
+      "approvals"
+    ],
+    "spec": "§13.3",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-034",
+    "phase": "P3",
+    "title": "Designated approvers (team mode)",
+    "description": "approver_group routing: card goes to the group, not the requester; both parties logged.",
+    "acceptance": [
+      "Group receives card",
+      "requester≠approver enforced where set",
+      "audit records both"
+    ],
+    "deps": [
+      "AX-033"
+    ],
+    "estimate": "M",
+    "labels": [
+      "approvals"
+    ],
+    "spec": "§3.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-035",
+    "phase": "P3",
+    "title": "Input guardrails",
+    "description": "Prompt-injection classifier + attachment heuristics, PII scope filter, org content policy; fail-closed.",
+    "acceptance": [
+      "Injection corpus blocked",
+      "PII policy enforced",
+      "blocked → E_GUARD_INPUT_BLOCKED"
+    ],
+    "deps": [
+      "AX-013"
+    ],
+    "estimate": "L",
+    "labels": [
+      "guardrails",
+      "security"
+    ],
+    "spec": "§9.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-036",
+    "phase": "P3",
+    "title": "Output guardrails / DLP",
+    "description": "Scan responses + generated files for secrets (regex + gitleaks lib); mask/refuse on policy violation.",
+    "acceptance": [
+      "Secret patterns masked",
+      "gitleaks on generated files",
+      "memory.save honors DLP"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "M",
+    "labels": [
+      "guardrails",
+      "dlp",
+      "security"
+    ],
+    "spec": "§9.3, §13.5",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-037",
+    "phase": "P3",
+    "title": "Vault + encrypted OAuth token store",
+    "description": "Vault integration; oauth_tokens encrypted AES-256-GCM with Vault key; injection only at gateway.",
+    "acceptance": [
+      "Tokens never leave gateway",
+      "at-rest encryption",
+      "zero secrets in sandbox verified"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "L",
+    "labels": [
+      "security",
+      "vault"
+    ],
+    "spec": "§13.2, §16.1, ADR 001",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-038",
+    "phase": "P3",
+    "title": "OAuth connect flows + refresh sweep",
+    "description": "GitHub/Notion OAuth start/callback; Trigger.dev oauth-refresh-sweep job with Redis locks.",
+    "acceptance": [
+      "Connect + callback stores token",
+      "refresh before expiry",
+      "revocation handled"
+    ],
+    "deps": [
+      "AX-037"
+    ],
+    "estimate": "M",
+    "labels": [
+      "oauth"
+    ],
+    "spec": "§13.2, §8.2",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-039",
+    "phase": "P3",
+    "title": "Audit log (append-only, partitioned)",
+    "description": "Write audit rows for every tool call/cron/admin action; monthly partitions; WORM export to S3.",
+    "acceptance": [
+      "Every sensitive action logged (who/what/when/result)",
+      "monthly partition job",
+      "export produces WORM file"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "M",
+    "labels": [
+      "audit",
+      "compliance"
+    ],
+    "spec": "§16.1, §16.3",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-040",
+    "phase": "P3",
+    "title": "Admin console v1",
+    "description": "Backoffice: orgs, users, tool_policies editor, budgets, audit viewer; SSO+MFA, view-as (read-only).",
+    "acceptance": [
+      "CRUD orgs/policies/budgets",
+      "audit searchable/exportable",
+      "every admin action audited"
+    ],
+    "deps": [
+      "AX-039",
+      "AX-032"
+    ],
+    "estimate": "L",
+    "labels": [
+      "admin",
+      "web"
+    ],
+    "spec": "§24.1, §24.2",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-041",
+    "phase": "P3",
+    "title": "P3 exit: approvals + audit demonstrated",
+    "description": "Show a require_approval decision and export the audit trail.",
+    "acceptance": [
+      "require_approval demoed",
+      "audit exportable",
+      "P3 exit gate green"
+    ],
+    "deps": [
+      "AX-033",
+      "AX-039",
+      "AX-040"
+    ],
+    "estimate": "S",
+    "labels": [
+      "milestone"
+    ],
+    "spec": "§29 P3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-042",
+    "phase": "P4",
+    "title": "Working memory (Redis)",
+    "description": "30-turn window + rolling summary (TTL 7d, re-summary every 15 turns).",
+    "acceptance": [
+      "Window persisted per conversation",
+      "summary regenerated",
+      "TTL enforced"
+    ],
+    "deps": [
+      "AX-012"
+    ],
+    "estimate": "M",
+    "labels": [
+      "memory"
+    ],
+    "spec": "§9.1 (type 1)",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-043",
+    "phase": "P4",
+    "title": "Semantic memory (pgvector) + extraction",
+    "description": "Durable facts in pgvector with dedup (cosine>0.92); async memory-extraction job.",
+    "acceptance": [
+      "Facts embedded + stored",
+      "dedup enforced",
+      "extraction job runs async"
+    ],
+    "deps": [
+      "AX-012"
+    ],
+    "estimate": "L",
+    "labels": [
+      "memory"
+    ],
+    "spec": "§9.1 (type 2)",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-044",
+    "phase": "P4",
+    "title": "Memory MCP (save/search/update/forget)",
+    "description": "Audited memory tool behind the gateway; versioned update; user self-serve forget.",
+    "acceptance": [
+      "4 ops work",
+      "writes audited (args_hash)",
+      "forget purges + audits"
+    ],
+    "deps": [
+      "AX-043",
+      "AX-017"
+    ],
+    "estimate": "M",
+    "labels": [
+      "memory",
+      "mcp-server"
+    ],
+    "spec": "§9.1.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-045",
+    "phase": "P4",
+    "title": "Procedural notes in workspace",
+    "description": "NOTES.md + per-project notes as the learned how-to; injected as <procedural_notes>.",
+    "acceptance": [
+      "Notes read/written by agent",
+      "injected into context",
+      "compaction >2000 lines"
+    ],
+    "deps": [
+      "AX-021"
+    ],
+    "estimate": "M",
+    "labels": [
+      "memory"
+    ],
+    "spec": "§9.1 (type 3)",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-046",
+    "phase": "P4",
+    "title": "Corrections memory",
+    "description": "Capture explicit corrections/thumbs-down/repeated approval refusals with reinforced weight.",
+    "acceptance": [
+      "Corrections stored kind=correction",
+      "weight bonus in ranking",
+      "3-refusal pattern learned"
+    ],
+    "deps": [
+      "AX-043"
+    ],
+    "estimate": "M",
+    "labels": [
+      "memory"
+    ],
+    "spec": "§9.1 (type 4)",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-047",
+    "phase": "P4",
+    "title": "Hybrid retrieval ranking",
+    "description": "top-k=8 hybrid score (cosine+recency+frequency, correction bonus), threshold 0.55, expires_at purge.",
+    "acceptance": [
+      "Ranking formula implemented",
+      "expired facts purged",
+      "3-section context injection"
+    ],
+    "deps": [
+      "AX-043",
+      "AX-046"
+    ],
+    "estimate": "M",
+    "labels": [
+      "memory"
+    ],
+    "spec": "§9.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-048",
+    "phase": "P4",
+    "title": "Planning (plan decomposition)",
+    "description": "Decompose task_agentique into a 3-7 step plan; detect automation intent; drive progress UI.",
+    "acceptance": [
+      "3-7 step plan produced",
+      "automation intent detected",
+      "budget estimate emitted"
+    ],
+    "deps": [
+      "AX-013"
+    ],
+    "estimate": "M",
+    "labels": [
+      "prompt-layer",
+      "planning"
+    ],
+    "spec": "§9.2",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-049",
+    "phase": "P4",
+    "title": "Multi-model routing + fallback",
+    "description": "llm-proxy routes eco/frontier by role, org-configurable, auto-fallback on quota/incident.",
+    "acceptance": [
+      "Role-based routing",
+      "fallback on failure",
+      "per-model usage tracked"
+    ],
+    "deps": [
+      "AX-020"
+    ],
+    "estimate": "M",
+    "labels": [
+      "llm-proxy",
+      "routing"
+    ],
+    "spec": "§9.5, Annexe H",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-050",
+    "phase": "P4",
+    "title": "Budgets + kill-switch",
+    "description": "Per-turn/per-run/per-month/per-org budgets with enforcement and an org kill-switch.",
+    "acceptance": [
+      "Budgets enforced at each level",
+      "kill-switch halts spend",
+      "usage_daily by origin"
+    ],
+    "deps": [
+      "AX-049"
+    ],
+    "estimate": "L",
+    "labels": [
+      "budgets",
+      "cost"
+    ],
+    "spec": "§10.2, §15.6, §25",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-051",
+    "phase": "P4",
+    "title": "Prompt-cache context structure",
+    "description": "Structure the LLM context for prompt caching; report cache hit rate.",
+    "acceptance": [
+      "Stable prefix for caching",
+      "hit rate measured",
+      "cost drop visible"
+    ],
+    "deps": [
+      "AX-049"
+    ],
+    "estimate": "M",
+    "labels": [
+      "llm-proxy",
+      "cost"
+    ],
+    "spec": "§9.6",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-052",
+    "phase": "P4",
+    "title": "Agent profile selection",
+    "description": "Select OpenCode profile by classification + user preference (dev/data/ops/generalist).",
+    "acceptance": [
+      "Profile chosen automatically",
+      "user override respected",
+      "job can pin a profile"
+    ],
+    "deps": [
+      "AX-016",
+      "AX-048"
+    ],
+    "estimate": "S",
+    "labels": [
+      "agent",
+      "prompt-layer"
+    ],
+    "spec": "§9.5",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-053",
+    "phase": "P4",
+    "title": "Memory UI + hygiene guards",
+    "description": "Memories page (view/edit/delete by type) + write-forbidden guards (secrets, sensitive, third-party facts).",
+    "acceptance": [
+      "Memories page live",
+      "adversarial hygiene tests pass",
+      "user-erasure wired"
+    ],
+    "deps": [
+      "AX-044",
+      "AX-040"
+    ],
+    "estimate": "M",
+    "labels": [
+      "memory",
+      "web",
+      "privacy"
+    ],
+    "spec": "§9.1.3, §4.4",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-054",
+    "phase": "P4",
+    "title": "P4 exit: personalization + cost tracking",
+    "description": "Show personalization influencing answers and per-org cost tracking.",
+    "acceptance": [
+      "Personalization visible",
+      "costs tracked per org",
+      "P4 exit gate green"
+    ],
+    "deps": [
+      "AX-047",
+      "AX-050"
+    ],
+    "estimate": "S",
+    "labels": [
+      "milestone"
+    ],
+    "spec": "§29 P4",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-055",
+    "phase": "P5",
+    "title": "automation-service jobs API",
+    "description": "TypeScript service owning scheduled_jobs: create/update/pause/resume/delete/resync.",
+    "acceptance": [
+      "CRUD + resync endpoints",
+      "scheduled_jobs is source of truth",
+      "idempotent create (dedup key)"
+    ],
+    "deps": [
+      "AX-004"
+    ],
+    "estimate": "L",
+    "labels": [
+      "automation"
+    ],
+    "spec": "§15.2, §8.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-056",
+    "phase": "P5",
+    "title": "Trigger.dev self-hosted",
+    "description": "Deploy Trigger.dev v4 (webapp/supervisor/workers/datastores); DEV/STAGING/PROD envs isolated.",
+    "acceptance": [
+      "Trigger.dev up self-hosted",
+      "envs isolated",
+      "dashboard reachable"
+    ],
+    "deps": [
+      "AX-055"
+    ],
+    "estimate": "L",
+    "labels": [
+      "automation",
+      "infra"
+    ],
+    "spec": "§15, §22.1, ADR 004",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-057",
+    "phase": "P5",
+    "title": "Pivot task (agent-scheduled-run)",
+    "description": "The one durable task that fires a cron and re-injects an InboundMessage into /internal/scheduled-runs.",
+    "acceptance": [
+      "Cron re-enters standard pipeline",
+      "idempotency key per fire",
+      "retries durable"
+    ],
+    "deps": [
+      "AX-056",
+      "AX-012"
+    ],
+    "estimate": "L",
+    "labels": [
+      "automation"
+    ],
+    "spec": "§15.3, ADR 005",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-058",
+    "phase": "P5",
+    "title": "Scheduler MCP façade",
+    "description": "MCP tools create_cron/list_crons/pause/run_now over automation-service; policy-gated.",
+    "acceptance": [
+      "Tools callable by agent",
+      "create_cron require_approval default",
+      "list_crons allow"
+    ],
+    "deps": [
+      "AX-055",
+      "AX-017"
+    ],
+    "estimate": "M",
+    "labels": [
+      "mcp-server",
+      "automation"
+    ],
+    "spec": "§14.1, §15",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-059",
+    "phase": "P5",
+    "title": "Cron creation flow + approval",
+    "description": "NL intent → proposed cron → user confirmation → active; immutable versioned prompt.",
+    "acceptance": [
+      "Draft→pending→active lifecycle",
+      "prompt immutable/versioned",
+      "agent.cron.created emitted"
+    ],
+    "deps": [
+      "AX-058",
+      "AX-033"
+    ],
+    "estimate": "M",
+    "labels": [
+      "automation",
+      "approvals"
+    ],
+    "spec": "§15.4, §9.2",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-060",
+    "phase": "P5",
+    "title": "Fire-time permissions preflight",
+    "description": "Re-evaluate perms/guardrails/budgets at each run; degrade/pause on revocation (E_PERM_REVOKED).",
+    "acceptance": [
+      "Perms re-checked per run",
+      "revoked user → job paused + notified",
+      "never escalates"
+    ],
+    "deps": [
+      "AX-057",
+      "AX-032"
+    ],
+    "estimate": "L",
+    "labels": [
+      "automation",
+      "security"
+    ],
+    "spec": "§9.4, §15.6, ADR 006",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-061",
+    "phase": "P5",
+    "title": "Job lifecycle state machine",
+    "description": "draft/pending_approval/active/paused/deleted with 3-failure auto-pause and resume re-checks.",
+    "acceptance": [
+      "State transitions enforced",
+      "auto-pause on 3 failures",
+      "resume re-verifies quotas/policy"
+    ],
+    "deps": [
+      "AX-059"
+    ],
+    "estimate": "M",
+    "labels": [
+      "automation"
+    ],
+    "spec": "§15.4",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-062",
+    "phase": "P5",
+    "title": "Delivery & notifications",
+    "description": "Deliver run results to DM/email/webhook; anti-noise digests; no-op suppression.",
+    "acceptance": [
+      "3 delivery channels",
+      "digest batching",
+      "no-op runs suppressed"
+    ],
+    "deps": [
+      "AX-057"
+    ],
+    "estimate": "M",
+    "labels": [
+      "automation",
+      "notifications"
+    ],
+    "spec": "§15.5",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-063",
+    "phase": "P5",
+    "title": "job_memory between runs",
+    "description": "Persist per-job state (dedup already-alerted, no_op markers) in scheduled_jobs.job_memory.",
+    "acceptance": [
+      "State persists across runs",
+      "duplicate alerts suppressed",
+      "bounded size"
+    ],
+    "deps": [
+      "AX-057"
+    ],
+    "estimate": "S",
+    "labels": [
+      "automation",
+      "memory"
+    ],
+    "spec": "§9.1, §15",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-064",
+    "phase": "P5",
+    "title": "Automations UI page",
+    "description": "User page: list crons (human schedule, next run, run history+cost), pause/resume/edit/delete.",
+    "acceptance": [
+      "Crons listed with next run",
+      "pause/resume/edit works",
+      "run history + cost shown"
+    ],
+    "deps": [
+      "AX-055",
+      "AX-019"
+    ],
+    "estimate": "M",
+    "labels": [
+      "web",
+      "automation"
+    ],
+    "spec": "§4.4, §7.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-065",
+    "phase": "P5",
+    "title": "Internal platform jobs",
+    "description": "Migrate consolidation jobs to Trigger.dev: memory-consolidation, oauth-refresh-sweep, partition roll, user-erasure.",
+    "acceptance": [
+      "4 internal jobs scheduled",
+      "declarative schedules deploy",
+      "runs observable"
+    ],
+    "deps": [
+      "AX-056"
+    ],
+    "estimate": "M",
+    "labels": [
+      "automation",
+      "platform"
+    ],
+    "spec": "§9.1.3, §15.7",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-066",
+    "phase": "P5",
+    "title": "Event-driven automations (webhooks)",
+    "description": "Inbound webhooks trigger automations (Sentry/GitHub events) into the same pipeline.",
+    "acceptance": [
+      "Webhook → automation run",
+      "signature verified",
+      "same guardrails/audit"
+    ],
+    "deps": [
+      "AX-057"
+    ],
+    "estimate": "M",
+    "labels": [
+      "automation"
+    ],
+    "spec": "§15.8",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-067",
+    "phase": "P5",
+    "title": "P5 exit: fire-time perms proven",
+    "description": "Demo §18.2 + §18.3 end-to-end; revoke a right and show the job pauses.",
+    "acceptance": [
+      "Cron create+run demoed",
+      "revocation test pauses job",
+      "P5 exit gate green"
+    ],
+    "deps": [
+      "AX-060",
+      "AX-062"
+    ],
+    "estimate": "S",
+    "labels": [
+      "milestone",
+      "security"
+    ],
+    "spec": "§29 P5",
+    "status": "done",
+    "wedge": true
+  },
+  {
+    "id": "AX-068",
+    "phase": "P6",
+    "title": "M365 MCP (Graph delegated)",
+    "description": "Outlook/Teams/Calendar/SharePoint via MS Graph, delegated (OBO); read/search/summarize/send (approval).",
+    "acceptance": [
+      "Read + summarize mail",
+      "send behind approval",
+      "delegated scopes only"
+    ],
+    "deps": [
+      "AX-017",
+      "AX-038"
+    ],
+    "estimate": "L",
+    "labels": [
+      "mcp-server",
+      "m365"
+    ],
+    "spec": "§14",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-069",
+    "phase": "P6",
+    "title": "Browser MCP (hardened Playwright pool)",
+    "description": "Headless Playwright pool: read/click/fill/download/capture; sandboxed, resource-capped.",
+    "acceptance": [
+      "Page read + structured extract",
+      "downloads to S3",
+      "pool autoscales, capped"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "L",
+    "labels": [
+      "mcp-server",
+      "browser"
+    ],
+    "spec": "§14",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-070",
+    "phase": "P6",
+    "title": "Database MCP (capped SELECT)",
+    "description": "Schema introspection + capped read-only SELECTs + internal APIs; write behind deny/approval.",
+    "acceptance": [
+      "Schema listed",
+      "SELECT row/time capped",
+      "writes denied for member"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "M",
+    "labels": [
+      "mcp-server",
+      "database"
+    ],
+    "spec": "§14",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-071",
+    "phase": "P6",
+    "title": "Notion MCP",
+    "description": "Create/read minutes, specs, wikis in Notion.",
+    "acceptance": [
+      "Page create/read",
+      "search works",
+      "approval on writes where policy"
+    ],
+    "deps": [
+      "AX-017",
+      "AX-038"
+    ],
+    "estimate": "M",
+    "labels": [
+      "mcp-server",
+      "notion"
+    ],
+    "spec": "§14",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-072",
+    "phase": "P6",
+    "title": "Slack MCP",
+    "description": "Read channels and post recaps (distinct from the inbound Slack adapter).",
+    "acceptance": [
+      "Read channel history",
+      "post recap",
+      "scoped to bot token"
+    ],
+    "deps": [
+      "AX-017"
+    ],
+    "estimate": "M",
+    "labels": [
+      "mcp-server",
+      "slack"
+    ],
+    "spec": "§14",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-073",
+    "phase": "P6",
+    "title": "Connector onboarding process",
+    "description": "Industrialized checklist/template to add a connector (scopes, policies, tests, docs).",
+    "acceptance": [
+      "Template + checklist",
+      "new connector in <X days",
+      "policy+eval coverage required"
+    ],
+    "deps": [
+      "AX-068"
+    ],
+    "estimate": "S",
+    "labels": [
+      "mcp-server",
+      "dx"
+    ],
+    "spec": "§14.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-074",
+    "phase": "P6",
+    "title": "P6 exit: 7 connectors in internal prod",
+    "description": "GitHub+M365+Browser+DB+Notion+Slack+Scheduler live internally.",
+    "acceptance": [
+      "7 connectors operational",
+      "internal dogfood passing",
+      "P6 exit gate green"
+    ],
+    "deps": [
+      "AX-068",
+      "AX-069",
+      "AX-070",
+      "AX-071",
+      "AX-072"
+    ],
+    "estimate": "S",
+    "labels": [
+      "milestone"
+    ],
+    "spec": "§29 P6",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-075",
+    "phase": "P7",
+    "title": "K8s topology + gVisor",
+    "description": "Namespaces per §22.1, dedicated tainted sandbox node pool, gVisor RuntimeClass.",
+    "acceptance": [
+      "Namespaces deployed",
+      "sandbox pool isolated",
+      "gVisor enforced"
+    ],
+    "deps": [
+      "AX-015"
+    ],
+    "estimate": "L",
+    "labels": [
+      "infra",
+      "k8s"
+    ],
+    "spec": "§22.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-076",
+    "phase": "P7",
+    "title": "Sandbox NetworkPolicy lockdown",
+    "description": "Egress only to mcp-gateway:8443 + llm-proxy:4000 + kube-dns; ingress only from orchestrator.",
+    "acceptance": [
+      "Policy applied",
+      "external egress blocked (test)",
+      "principle #2 verified"
+    ],
+    "deps": [
+      "AX-075"
+    ],
+    "estimate": "M",
+    "labels": [
+      "infra",
+      "security"
+    ],
+    "spec": "§17.4, §22.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-077",
+    "phase": "P7",
+    "title": "Terraform IaC",
+    "description": "VPC, cluster, KMS, S3, DNS as code.",
+    "acceptance": [
+      "`terraform apply` provisions base",
+      "state remote+locked",
+      "reviewed plan in CI"
+    ],
+    "deps": [
+      "AX-075"
+    ],
+    "estimate": "L",
+    "labels": [
+      "infra",
+      "terraform"
+    ],
+    "spec": "§22.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-078",
+    "phase": "P7",
+    "title": "Helm charts per service",
+    "description": "Chart per service + values per env; Trigger.dev official chart wired.",
+    "acceptance": [
+      "Charts render",
+      "env values separated",
+      "resource requests/limits set"
+    ],
+    "deps": [
+      "AX-075"
+    ],
+    "estimate": "L",
+    "labels": [
+      "infra",
+      "helm"
+    ],
+    "spec": "§22.1",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-079",
+    "phase": "P7",
+    "title": "ArgoCD GitOps",
+    "description": "App-of-apps; auto-sync staging, manual-approval prod, canary 10% on backend-core.",
+    "acceptance": [
+      "Staging auto-syncs",
+      "prod gated",
+      "canary + rollback wired"
+    ],
+    "deps": [
+      "AX-078"
+    ],
+    "estimate": "M",
+    "labels": [
+      "infra",
+      "gitops"
+    ],
+    "spec": "§22.1, §22.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-080",
+    "phase": "P7",
+    "title": "Full CI/CD (evals gate, supply chain)",
+    "description": "Extend CI: evals gate, image build+SBOM(syft)+cosign, Trivy(CRITICAL=STOP), Atlas migration lint.",
+    "acceptance": [
+      "Evals gate blocks >3% regression",
+      "signed images + SBOM",
+      "Trivy/gitleaks blocking"
+    ],
+    "deps": [
+      "AX-008",
+      "AX-083"
+    ],
+    "estimate": "L",
+    "labels": [
+      "ci",
+      "security"
+    ],
+    "spec": "§22.3",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-081",
+    "phase": "P7",
+    "title": "Observability stack",
+    "description": "OTel traces + Prometheus + Grafana + Loki + Tempo; dashboards per service.",
+    "acceptance": [
+      "Traces end-to-end",
+      "logs+metrics shipped",
+      "service dashboards live"
+    ],
+    "deps": [
+      "AX-007"
+    ],
+    "estimate": "L",
+    "labels": [
+      "observability"
+    ],
+    "spec": "§19",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-082",
+    "phase": "P7",
+    "title": "SLO dashboards + bi-level alerting",
+    "description": "SLOs (Annexe A): first-token P95, cron failure rate, cron delay, error-budget burn; multi-window multi-burn alerts.",
+    "acceptance": [
+      "SLO dashboards live",
+      "burn-rate alerts fire",
+      "paging vs ticket tiers"
+    ],
+    "deps": [
+      "AX-081"
+    ],
+    "estimate": "M",
+    "labels": [
+      "observability",
+      "sre"
+    ],
+    "spec": "§19, §24.6, Annexe A",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-083",
+    "phase": "P7",
+    "title": "Agent evals (golden + adversarial)",
+    "description": "150 golden tasks + 20 cron scenarios + injection corpus; run as CI gate.",
+    "acceptance": [
+      "Golden set runs in CI",
+      "adversarial corpus enforced",
+      "regression threshold wired"
+    ],
+    "deps": [
+      "AX-035"
+    ],
+    "estimate": "L",
+    "labels": [
+      "evals",
+      "quality"
+    ],
+    "spec": "§20.2",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-084",
+    "phase": "P7",
+    "title": "Warm pool + hibernation",
+    "description": "Warm sandbox pool + aggressive hibernation to hit the cost model.",
+    "acceptance": [
+      "Warm pool serves cold-starts",
+      "idle sandboxes hibernate",
+      "cost per §25 met"
+    ],
+    "deps": [
+      "AX-014"
+    ],
+    "estimate": "M",
+    "labels": [
+      "orchestrator",
+      "cost"
+    ],
+    "spec": "§10.1, §23, §25",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-085",
+    "phase": "P7",
+    "title": "HA topology",
+    "description": "Postgres primary+replicas failover, NATS 3-node cluster, orchestrator leader election, multi-AZ.",
+    "acceptance": [
+      "Failover tested",
+      "NATS quorum",
+      "leader election verified"
+    ],
+    "deps": [
+      "AX-075"
+    ],
+    "estimate": "L",
+    "labels": [
+      "infra",
+      "ha"
+    ],
+    "spec": "§23",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-086",
+    "phase": "P7",
+    "title": "DR: backups + resync",
+    "description": "WAL archiving+snapshots+Trigger.dev dumps (RPO 15m/RTO 1h); resync-schedules script.",
+    "acceptance": [
+      "Restore drill meets RPO/RTO",
+      "resync-schedules rebuilds crons idempotently",
+      "runbook written"
+    ],
+    "deps": [
+      "AX-085"
+    ],
+    "estimate": "M",
+    "labels": [
+      "infra",
+      "dr"
+    ],
+    "spec": "§23",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-087",
+    "phase": "P7",
+    "title": "Load tests",
+    "description": "500 active sandboxes + 1000 crons/h; verify autoscaling and jitter smoothing.",
+    "acceptance": [
+      "Load target sustained",
+      "autoscaling holds SLO",
+      "cron spikes smoothed"
+    ],
+    "deps": [
+      "AX-084",
+      "AX-079"
+    ],
+    "estimate": "M",
+    "labels": [
+      "performance"
+    ],
+    "spec": "§23",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-088",
+    "phase": "P7",
+    "title": "Pentest + incident response",
+    "description": "External pentest; breach/incident-response runbook; remediation tracked.",
+    "acceptance": [
+      "Pentest findings triaged",
+      "IR runbook exercised",
+      "criticals closed"
+    ],
+    "deps": [
+      "AX-076",
+      "AX-037"
+    ],
+    "estimate": "L",
+    "labels": [
+      "security"
+    ],
+    "spec": "§17.2, §17.5",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-089",
+    "phase": "P7",
+    "title": "Admin console complete + platctl + runbooks",
+    "description": "Full console, platctl CLI, runbooks; solo-ops rituals.",
+    "acceptance": [
+      "Console covers §24.2 screens",
+      "platctl operational",
+      "runbooks published"
+    ],
+    "deps": [
+      "AX-040"
+    ],
+    "estimate": "L",
+    "labels": [
+      "admin",
+      "ops"
+    ],
+    "spec": "§24",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-090",
+    "phase": "P7",
+    "title": "org-platform dogfooding",
+    "description": "Run the platform team on its own org (§24.8) as living QA.",
+    "acceptance": [
+      "org-platform active",
+      "team uses agent daily",
+      "issues fed back"
+    ],
+    "deps": [
+      "AX-089"
+    ],
+    "estimate": "S",
+    "labels": [
+      "ops",
+      "quality"
+    ],
+    "spec": "§24.8",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-091",
+    "phase": "P7",
+    "title": "P7 exit: SLOs met, 99.9%",
+    "description": "All SLOs (Annexe A) sustained; availability target proven.",
+    "acceptance": [
+      "SLOs green over window",
+      "99.9% availability",
+      "go-live checklist (Annexe D) complete"
+    ],
+    "deps": [
+      "AX-082",
+      "AX-086",
+      "AX-087",
+      "AX-088"
+    ],
+    "estimate": "M",
+    "labels": [
+      "milestone"
+    ],
+    "spec": "§29 P7",
+    "status": "in_progress",
+    "wedge": false
+  },
+  {
+    "id": "AX-092",
+    "phase": "PX",
+    "title": "Localization fr/en/ar",
+    "description": "Localize agent replies, approval cards, notifications, error taxonomy; RTL for Arabic.",
+    "acceptance": [
+      "3 locales at launch",
+      "cards/errors localized",
+      "RTL rendering correct"
+    ],
+    "deps": [
+      "AX-003"
+    ],
+    "estimate": "M",
+    "labels": [
+      "i18n",
+      "product"
+    ],
+    "spec": "§7, §7.4",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-093",
+    "phase": "PX",
+    "title": "Pricing & packaging",
+    "description": "Define plans/seats/quotas, TND billing with local VAT, usage split interactive vs scheduled.",
+    "acceptance": [
+      "Plans defined",
+      "billing page (TND/VAT)",
+      "usage_daily.origin drives invoices"
+    ],
+    "deps": [],
+    "estimate": "M",
+    "labels": [
+      "business",
+      "billing"
+    ],
+    "spec": "§30, §4.4",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-094",
+    "phase": "PX",
+    "title": "Legal: ToS, DPA, liability",
+    "description": "Terms, data processing agreement, liability model, sub-processor list.",
+    "acceptance": [
+      "ToS + DPA published",
+      "sub-processors listed",
+      "liability reviewed by counsel"
+    ],
+    "deps": [],
+    "estimate": "M",
+    "labels": [
+      "business",
+      "legal"
+    ],
+    "spec": "§30",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-095",
+    "phase": "PX",
+    "title": "Support & SLA",
+    "description": "Contractual support tiers and SLAs; escalation paths.",
+    "acceptance": [
+      "SLA tiers documented",
+      "support workflow live",
+      "status page"
+    ],
+    "deps": [],
+    "estimate": "S",
+    "labels": [
+      "business",
+      "support"
+    ],
+    "spec": "§30",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-096",
+    "phase": "PX",
+    "title": "Org onboarding flow",
+    "description": "Self-serve/assisted org onboarding: identity linking, connectors, policies, budgets.",
+    "acceptance": [
+      "Org can be onboarded in a day",
+      "admin connectors page",
+      "policy defaults seeded"
+    ],
+    "deps": [
+      "AX-040"
+    ],
+    "estimate": "M",
+    "labels": [
+      "product",
+      "onboarding"
+    ],
+    "spec": "§3.5, §30",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-097",
+    "phase": "PX",
+    "title": "RGPD user-erasure",
+    "description": "Erasure job purging memories/entities/entity_facts/workspace notes; UI trigger.",
+    "acceptance": [
+      "Erasure job complete + audited",
+      "UI zone wired",
+      "verifiable purge"
+    ],
+    "deps": [
+      "AX-065",
+      "AX-053"
+    ],
+    "estimate": "M",
+    "labels": [
+      "privacy",
+      "compliance"
+    ],
+    "spec": "§4.4, §15.7",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-098",
+    "phase": "PX",
+    "title": "At-rest volume encryption",
+    "description": "Encrypt sandbox volumes at rest.",
+    "acceptance": [
+      "Volumes encrypted",
+      "keys managed (KMS/Vault)",
+      "verified on new volume"
+    ],
+    "deps": [
+      "AX-021"
+    ],
+    "estimate": "S",
+    "labels": [
+      "security"
+    ],
+    "spec": "§17",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-099",
+    "phase": "PX",
+    "title": "Attachment antivirus",
+    "description": "Scan inbound attachments before storage/use.",
+    "acceptance": [
+      "AV scan on upload",
+      "infected rejected + logged",
+      "scan latency acceptable"
+    ],
+    "deps": [
+      "AX-011"
+    ],
+    "estimate": "S",
+    "labels": [
+      "security"
+    ],
+    "spec": "§17",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-100",
+    "phase": "PX",
+    "title": "Breach response plan",
+    "description": "Documented breach detection→containment→notification with regulatory timelines.",
+    "acceptance": [
+      "Plan documented + owned",
+      "tabletop exercised",
+      "notification templates ready"
+    ],
+    "deps": [
+      "AX-088"
+    ],
+    "estimate": "S",
+    "labels": [
+      "security",
+      "compliance"
+    ],
+    "spec": "§17.5",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-101",
+    "phase": "PX",
+    "title": "Prompt registry + feedback→evals loop",
+    "description": "Registry of system prompts + a feedback loop feeding the eval corpus.",
+    "acceptance": [
+      "Prompts versioned in registry",
+      "thumbs feed evals",
+      "regressions caught"
+    ],
+    "deps": [
+      "AX-083"
+    ],
+    "estimate": "M",
+    "labels": [
+      "quality",
+      "prompt-layer"
+    ],
+    "spec": "§20",
+    "status": "done",
+    "wedge": false
+  },
+  {
+    "id": "AX-102",
+    "phase": "PX",
+    "title": "Team mode (Mode B) configuration",
+    "description": "Shared org-agent: GitHub App token, service DB, on_behalf_of authz, org memory, no personal connectors.",
+    "acceptance": [
+      "on_behalf_of enforced in authz",
+      "org-scoped Vault entry",
+      "personal connectors disabled"
+    ],
+    "deps": [
+      "AX-032",
+      "AX-037"
+    ],
+    "estimate": "L",
+    "labels": [
+      "product",
+      "security"
+    ],
+    "spec": "§3",
+    "status": "done",
+    "wedge": true
+  }
+]

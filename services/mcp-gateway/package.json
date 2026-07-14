@@ -1,0 +1,11 @@
+{
+  "name": "@olma/mcp-gateway",
+  "version": "0.1.0",
+  "description": "Axone MCP Gateway — single AuthZ/DLP/audit chokepoint (instructions.md §13, ADR 001)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/gateway.test.ts",
+    "start": "node src/server.ts"
+  },
+  "engines": { "node": ">=23" }
+}

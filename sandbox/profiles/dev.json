@@ -1,0 +1,10 @@
+{
+  "name": "dev",
+  "description": "Software engineering: code, PRs, issues.",
+  "default_model": "frontier",
+  "tools": [
+    "github",
+    "browser",
+    "database"
+  ]
+}

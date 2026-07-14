@@ -1,0 +1,57 @@
+# Sandbox egress lockdown (instructions.md §17.4, §22.3) — the enforcement of
+# Principle #2: a sandbox's ONLY outbound network is the MCP Gateway + llm-proxy,
+# ingress only from the orchestrator. This is what makes "can't exfiltrate / can't
+# reach another user's data" a structural guarantee, not a config toggle.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-lockdown
+  namespace: sandboxes
+spec:
+  podSelector:
+    matchLabels:
+      role: sandbox
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the orchestrator pushes turns (:4096).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: orchestration
+      ports:
+        - port: 4096
+          protocol: TCP
+  egress:
+    # Sole app egress: the MCP Gateway (:8443).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: mcp
+          podSelector:
+            matchLabels:
+              app: mcp-gateway
+      ports:
+        - port: 8443
+          protocol: TCP
+    # + the LLM proxy (:4000).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: core
+          podSelector:
+            matchLabels:
+              app: llm-proxy
+      ports:
+        - port: 4000
+          protocol: TCP
+    # + cluster DNS only (no external resolution).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
