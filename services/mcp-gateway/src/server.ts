@@ -2,6 +2,7 @@
 // dep. POST /v1/tool/call runs a tool through the gateway; GET /healthz, GET /audit.
 // In prod this listens on :8443 with mTLS from the sandboxes only (§17.4).
 import { createServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { McpGateway, type ToolCall, type ToolHandler } from "./gateway.ts";
 import { GithubMcp, StubBackend, type GithubBackend } from "../../mcp-servers/github/src/github.ts";
 import { RestBackend } from "../../mcp-servers/github/src/rest.ts";
@@ -30,6 +31,30 @@ const SECRET = process.env.TASK_JWT_SECRET
   ?? (process.env.OLMA_ENV === "prod"
         ? (() => { throw new Error("TASK_JWT_SECRET must be set when OLMA_ENV=prod"); })()
         : "dev-task-jwt-secret");
+
+// Service-token gate for POST /v1/connect (§3.2/§13.2). This listener also serves /mcp to
+// sandboxes — the untrusted execution plane — so writing to the credential store must NOT be
+// reachable by an unauthenticated caller: a malicious agent could otherwise overwrite an org's
+// service credential or hijack another user's provider token. Same dev-vs-prod fail-closed shape
+// as TASK_JWT_SECRET above: an unset GATEWAY_ADMIN_TOKEN throws at boot in prod (never silently
+// open); dev/test get a fixed default so `X-Service-Token` is still REQUIRED on every call, just
+// against a well-known value (mirrors backend-core's INTERNAL_SERVICE_TOKEN / X-Service-Token /
+// _require_service_token gate on /internal/*, services/backend-core/app/main.py).
+const GATEWAY_ADMIN_TOKEN = process.env.GATEWAY_ADMIN_TOKEN
+  ?? (process.env.OLMA_ENV === "prod"
+        ? (() => { throw new Error("GATEWAY_ADMIN_TOKEN must be set when OLMA_ENV=prod"); })()
+        : "dev-gateway-admin-token");
+
+// Constant-time compare against GATEWAY_ADMIN_TOKEN (crypto.timingSafeEqual — the Node analogue of
+// Python's hmac.compare_digest) so a timing side-channel can't leak the token byte-by-byte. Missing
+// header, wrong length, or mismatch all deny — no shortcut that could leak length/content.
+function hasValidServiceToken(headerValue: string | string[] | undefined): boolean {
+  if (typeof headerValue !== "string" || headerValue.length === 0) return false;
+  const expected = Buffer.from(GATEWAY_ADMIN_TOKEN, "utf8");
+  const actual = Buffer.from(headerValue, "utf8");
+  if (expected.length !== actual.length) return false;
+  return timingSafeEqual(expected, actual);
+}
 
 // TASK JWT algorithm seam (ADR-012, §13.4). HS256 (shared secret) is the DEFAULT so the
 // offline/keyless dev + test path is unchanged. Set TASK_JWT_ALG=ES256 to verify P-256
@@ -338,7 +363,13 @@ export function createGatewayServer(gw = buildGateway()) {
     }
     // Connector store (§13.2, AX-038): the OAuth callback / backend proxies a token here; it is
     // sealed (AES-256-GCM) in the Vault under (userId, provider) and never returned toward the sandbox.
+    // Gated by X-Service-Token (see GATEWAY_ADMIN_TOKEN above): this listener also serves /mcp to
+    // sandboxes, so an unauthenticated caller must never be able to overwrite a credential — a
+    // sandbox agent must not be able to influence the credential store (§3.2/§13.2 invariant).
     if (req.method === "POST" && req.url === "/v1/connect") {
+      if (!hasValidServiceToken(req.headers["x-service-token"])) {
+        return send(403, { error: { code: "E_PERM_TOOL_DENIED", message: "X-Service-Token required" } });
+      }
       let raw = "";
       for await (const chunk of req) raw += chunk;
       let body: { userId?: string; provider?: string; token?: string };

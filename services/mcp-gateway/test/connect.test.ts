@@ -12,6 +12,10 @@ import { sign } from "../../../packages/shared-ts/src/jwt.ts";
 const SECRET = "dev-task-jwt-secret";
 const USER = "usr_connect";
 const STORED = "ghp_" + "s".repeat(36); // the per-user token stored via /v1/connect
+// The gateway's dev default (server.ts GATEWAY_ADMIN_TOKEN) when GATEWAY_ADMIN_TOKEN is unset —
+// POST /v1/connect requires this on X-Service-Token even in dev/test (fail-closed by default,
+// not fail-open): mirrors backend-core's INTERNAL_SERVICE_TOKEN / X-Service-Token convention.
+const SERVICE_TOKEN = "dev-gateway-admin-token";
 
 function taskJwt(sub: string): string {
   const now = Math.floor(Date.now() / 1000);
@@ -23,12 +27,19 @@ function taskJwt(sub: string): string {
   }, SECRET);
 }
 
-// Minimal HTTP client against a listening server; returns { status, json }.
-async function req(server: ReturnType<typeof createGatewayServer>, method: string, path: string, body?: unknown) {
+// Minimal HTTP client against a listening server; returns { status, json }. `serviceToken` set →
+// adds X-Service-Token (required by POST /v1/connect); omit to exercise the unauthenticated path.
+async function req(
+  server: ReturnType<typeof createGatewayServer>, method: string, path: string, body?: unknown,
+  opts: { serviceToken?: string } = {},
+) {
   const { port } = server.address() as AddressInfo;
+  const headers: Record<string, string> = {};
+  if (body) headers["content-type"] = "application/json";
+  if (opts.serviceToken !== undefined) headers["x-service-token"] = opts.serviceToken;
   const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method,
-    headers: body ? { "content-type": "application/json" } : {},
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: res.status, json: (await res.json()) as any };
@@ -38,13 +49,37 @@ async function listen(server: ReturnType<typeof createGatewayServer>): Promise<v
   await new Promise<void>((resolve) => server.listen(0, resolve));
 }
 
+test("POST /v1/connect without X-Service-Token fails closed (403)", async () => {
+  const server = createGatewayServer();
+  await listen(server);
+  try {
+    const noHeader = await req(server, "POST", "/v1/connect", { userId: USER, provider: "github", token: STORED });
+    assert.equal(noHeader.status, 403);
+    assert.equal(noHeader.json.error.code, "E_PERM_TOOL_DENIED");
+
+    const wrongToken = await req(server, "POST", "/v1/connect",
+      { userId: USER, provider: "github", token: STORED }, { serviceToken: "not-the-token" });
+    assert.equal(wrongToken.status, 403);
+
+    // Prove the store was never touched: no connection shows up for USER.
+    const list = await req(server, "GET", `/v1/connections?userId=${USER}`);
+    assert.equal(
+      list.json.connections.some((x: any) => x.provider === "github"), false,
+      "an unauthenticated /v1/connect must not have stored anything",
+    );
+  } finally {
+    server.close();
+  }
+});
+
 test("POST /v1/connect stores the token; GET /v1/connections lists the provider for that user", async () => {
   const prev = process.env.GITHUB_TOKEN;
   delete process.env.GITHUB_TOKEN;
   const server = createGatewayServer();
   await listen(server);
   try {
-    const c = await req(server, "POST", "/v1/connect", { userId: USER, provider: "github", token: STORED });
+    const c = await req(server, "POST", "/v1/connect",
+      { userId: USER, provider: "github", token: STORED }, { serviceToken: SERVICE_TOKEN });
     assert.equal(c.status, 200);
     assert.deepEqual(c.json, { connected: true, provider: "github" });
 
@@ -79,7 +114,8 @@ test("a github tool call for the connected user injects the STORED token (not en
   const server = createGatewayServer(gw);
   await listen(server);
   try {
-    const c = await req(server, "POST", "/v1/connect", { userId: USER, provider: "github", token: STORED });
+    const c = await req(server, "POST", "/v1/connect",
+      { userId: USER, provider: "github", token: STORED }, { serviceToken: SERVICE_TOKEN });
     assert.equal(c.status, 200);
 
     const r = await gw.call({
