@@ -49,6 +49,13 @@ async def _run():
         seen_b = await con.fetchval("SELECT count(*) FROM conversations WHERE id = 'c_rls_a'")
         assert seen_b == 0, f"tenant leak: org_B saw {seen_b} of org_A's rows"
 
+        # 1b. FAIL-CLOSED: with NO app.org_id set (the GUC PgStore._acquire wires), the policy's
+        #     current_setting(...) is NULL/'' and matches ZERO rows — a session that forgot to set
+        #     its org sees nothing, never everything. This is the backstop for FIX 1 (admin reads).
+        await con.execute("SELECT set_config('app.org_id', '', false)")
+        seen_none = await con.fetchval("SELECT count(*) FROM conversations")
+        assert seen_none == 0, f"fail-closed violated: an unset app.org_id saw {seen_none} rows"
+
         # 2. WITH CHECK blocks forging a row stamped with a foreign org_id. Use a SAVEPOINT so
         #    the expected error only rolls back this attempt, not the whole test transaction.
         forge_blocked = False

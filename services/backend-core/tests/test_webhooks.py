@@ -446,6 +446,103 @@ def test_no_id_payloads_get_distinct_dedup_keys(client):
     assert len(keys) == 2, "distinct no-id payloads must get distinct dedup keys"
 
 
+# --------------------------------------------------------------- partial storm suppression (FIX 6)
+def test_partial_storm_suppression_keeps_delivery_retryable(client):
+    # Two automations match the same event; ONE is already at its storm threshold, the other is
+    # fresh. The delivery publishes the fresh one but suppresses the throttled one — the dedup key
+    # must NOT be consumed, so a redelivery can still deliver the suppressed target (never lost).
+    webhook_router.secrets[("github", "org_1")] = SECRET
+    for i in (1, 2):
+        webhook_router.register(EventAutomation(
+            id=f"auto_pr_{i}", user_id="usr_1", org_id="org_1", source="github",
+            event_type="pull_request.opened", prompt=f"Review {i} PR {{number}}",
+            match={"repo": "checkout"}))
+    webhook_storm.threshold = 5
+    # Pre-throttle ONLY auto_pr_1's bucket to the threshold so it alone gets suppressed.
+    webhook_storm._buckets["github:org_1:auto_pr_1"] = (time.time(), 5)
+
+    seen = []
+
+    async def spy(msg):
+        seen.append(msg)
+
+    from app import bus as busmod
+    unsub = busmod.bus.subscribe("inbound.messages", spy)
+    body = {"action": "opened", "repo": "checkout", "number": 3, "id": "p1"}
+    try:
+        r1 = _post_github(client, body, delivery="partial1")
+        # SAME delivery id — since it was NOT dedup-consumed (a target was suppressed), it is
+        # reprocessed rather than acked as a duplicate.
+        r2 = _post_github(client, body, delivery="partial1")
+    finally:
+        unsub()
+
+    assert r1.status_code == 202
+    assert r1.json()["fanned_out"] == 1 and r1.json()["suppressed"] == 1
+    assert not webhook_dedup.seen("partial1"), "a partially-suppressed delivery must stay retryable"
+    assert r2.json()["status"] != "duplicate", "the suppressed target must not be lost to dedup"
+
+
+def test_publish_failure_does_not_advance_storm_bucket(client, monkeypatch):
+    # FIX 6: the storm bucket must advance only on ACCEPTED (published) events — a publish
+    # failure + retry must not double-count toward the threshold.
+    _register_pr_automation()
+    webhook_storm.threshold = 1
+    from app import bus as busmod
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("bus down")
+
+    monkeypatch.setattr(busmod.bus, "publish", boom)
+    body = {"action": "opened", "repo": "checkout", "number": 1, "id": "e1"}
+    r_fail = _post_github(client, body, delivery="pf1")
+    assert r_fail.status_code == 502
+    # The failed publish left the bucket at zero (would be 1 if it counted before publishing).
+    assert webhook_storm._buckets.get("github:org_1:auto_pr_org_1", (0.0, 0))[1] == 0
+
+    seen = []
+
+    async def spy(msg):
+        seen.append(msg)
+
+    monkeypatch.undo()  # restore the real bus.publish
+    unsub = busmod.bus.subscribe("inbound.messages", spy)
+    try:
+        # threshold=1: this is the FIRST accepted event and must publish — it would be wrongly
+        # storm-paused if the earlier failure had advanced the bucket.
+        r_ok = _post_github(client, body, delivery="pf2")
+    finally:
+        unsub()
+    assert r_ok.status_code == 202 and r_ok.json()["fanned_out"] == 1
+    assert len(seen) == 1
+
+
+# --------------------------------------------------------------- distinct-time dedup (FIX 7)
+def test_identical_v0_payloads_at_distinct_times_are_not_dropped(client):
+    # FIX 7: two legitimately-distinct v0 deliveries with an IDENTICAL body but different SIGNED
+    # timestamps must NOT collide on sha256(body) alone — folding the signed ts in keeps both.
+    _register_sentry_automation()
+    seen = []
+
+    async def spy(msg):
+        seen.append(msg)
+
+    from app import bus as busmod
+    unsub = busmod.bus.subscribe("inbound.messages", spy)
+    raw = json.dumps({"event_type": "issue.p1"}).encode()
+    now = int(time.time())
+    ts1, ts2 = str(now), str(now - 1)  # both within ±5 min, distinct signed timestamps
+    try:
+        r1 = client.post("/webhooks/sentry?org=org_1", content=raw, headers={
+            "X-Signature": _sign_v0(raw, ts1), "X-Event-Type": "issue.p1", "X-Timestamp": ts1})
+        r2 = client.post("/webhooks/sentry?org=org_1", content=raw, headers={
+            "X-Signature": _sign_v0(raw, ts2), "X-Event-Type": "issue.p1", "X-Timestamp": ts2})
+    finally:
+        unsub()
+    assert r1.status_code == 202 and r2.status_code == 202
+    assert len(seen) == 2, "identical payloads at distinct signed times must not collide on dedup"
+
+
 # --------------------------------------------------------------- dedup store seam
 def test_dedup_store_from_env_selects_redis_when_configured():
     from app.webhooks import dedup_store_from_env, InMemoryDedup, RedisDedup

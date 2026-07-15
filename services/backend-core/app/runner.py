@@ -78,8 +78,15 @@ def start_runner() -> None:
 
 async def _on_inbound(msg: Message) -> None:
     data = msg.data
+    # Thread the REAL origin fields from the bus message verbatim (§17.6.3). A webhook-injected
+    # turn arrives with channel="webhook"/untrusted=True; fabricating channel="web"/usr_dev here
+    # would strip build_task's pre-taint + origin=scheduled, letting an injected turn run
+    # untainted + interactive (and exfiltrate via a public-egress tool).
     await _run_turn(data["conversation_id"], data["task_id"], data.get("text", ""),
-                    org_id=data.get("org_id", "org_1"))
+                    org_id=data.get("org_id", "org_1"),
+                    channel=data.get("channel", "web"),
+                    untrusted=bool(data.get("untrusted", False)),
+                    user_id=data.get("user_id", "usr_dev"))
 
 
 async def _emit(conversation_id: str, etype: str, data: dict) -> None:
@@ -87,7 +94,9 @@ async def _emit(conversation_id: str, etype: str, data: dict) -> None:
     await bus.publish(agent_events_subject(conversation_id), {"type": etype, "data": data})
 
 
-async def _run_turn(conversation_id: str, task_id: str, text: str, org_id: str = "org_1") -> None:
+async def _run_turn(conversation_id: str, task_id: str, text: str, org_id: str = "org_1",
+                    channel: str = "web", untrusted: bool = False,
+                    user_id: str = "usr_dev") -> None:
     clear_cancel(conversation_id)
     await _emit(conversation_id, "agent.thinking", {})
     await asyncio.sleep(0)
@@ -101,7 +110,8 @@ async def _run_turn(conversation_id: str, task_id: str, text: str, org_id: str =
     integrated = bool(PROMPT_LAYER_URL and LLM_PROXY_URL)
     if integrated:
         try:
-            reply, meta = await _integrated_turn(conversation_id, text, org_id)
+            reply, meta = await _integrated_turn(conversation_id, text, org_id,
+                                                 channel, untrusted, user_id)
         except Exception as exc:  # noqa: BLE001 — a turn must ALWAYS terminate the WS (§21)
             # prompt-layer or llm-proxy down/timeout/non-2xx: emit a terminal error + done so
             # the client never hangs. (str(exc) is backend-internal, no user secret; truncated.)
@@ -133,12 +143,18 @@ async def _run_turn(conversation_id: str, task_id: str, text: str, org_id: str =
     })
 
 
-async def _integrated_turn(conversation_id: str, text: str, org_id: str):
-    """Real turn: prompt-layer classifies + routes; llm-proxy completes (§9, §9.5)."""
+async def _integrated_turn(conversation_id: str, text: str, org_id: str,
+                           channel: str = "web", untrusted: bool = False,
+                           user_id: str = "usr_dev"):
+    """Real turn: prompt-layer classifies + routes; llm-proxy completes (§9, §9.5).
+
+    channel/untrusted/user_id are threaded verbatim from the bus message so build_task keeps the
+    real origin + taint (a webhook turn stays untrusted + non-interactive, §17.6.3)."""
     import httpx
 
-    inbound = {"message_id": "m", "user_id": "usr_dev", "org_id": org_id,
-               "conversation_id": conversation_id, "channel": "web", "text": text}
+    inbound = {"message_id": "m", "user_id": user_id, "org_id": org_id,
+               "conversation_id": conversation_id, "channel": channel,
+               "untrusted": untrusted, "text": text}
     async with httpx.AsyncClient(timeout=10) as http:
         pr = await http.post(f"{PROMPT_LAYER_URL}/v1/plan", json={"inbound": inbound})
         pr.raise_for_status()  # a non-2xx must raise, not .json()-crash into a silent hang
@@ -319,10 +335,17 @@ async def _opencode_drive(http, base: str, session_id: str, conversation_id: str
                     if part.get("type") == "tool":
                         await _map_tool_part(conversation_id, part, seen_call, seen_done)
                 elif etype == "session.idle":
-                    break
+                    # Terminal ONLY for this session — an idle carrying a missing/foreign
+                    # sessionID must not end another turn's drive loop (the generic filter above
+                    # lets sid=None through, so guard the terminal explicitly).
+                    if sid == session_id:
+                        break
 
-                # If the prompt failed before any idle (4xx/transport), stop waiting on events.
-                if prompt_task.done() and prompt_task.exception() is not None:
+                # The prompt POST completed: its awaited result is the authoritative reply +
+                # usage, so stop waiting on events — whether it SUCCEEDED (don't burn the turn
+                # timeout waiting for a session.idle that already effectively happened, which
+                # otherwise mislabels success as E_TOOL_UPSTREAM_ERROR) or FAILED (4xx/transport).
+                if prompt_task.done():
                     break
         finally:
             if not prompt_task.done():

@@ -8,6 +8,7 @@ Selected at startup when DATABASE_URL is set. Writes to the `conversations` and
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 
 import asyncpg
 
@@ -26,9 +27,22 @@ class PgStore:
         if self._pool is not None:
             await self._pool.close()
 
+    @asynccontextmanager
+    async def _acquire(self, org_id: str | None = None):
+        """Acquire a pooled connection and set the `app.org_id` session GUC the RLS policy
+        (migration 0004) keys on — WITHOUT this, current_setting('app.org_id', true) is NULL and
+        the tenant_isolation policy is inert (the FIX-1 backstop never engages). The GUC is set on
+        every checkout (to org_id, or '' when unknown) so a pooled connection never leaks a prior
+        org's scope; '' matches zero rows, i.e. fail-closed. NOTE: the policy binds only when the
+        app connects as the non-superuser `olma_app` role — a superuser/owner connection bypasses
+        even FORCE RLS, so the deployment DSN must use the app role for this to be load-bearing."""
+        async with self._pool.acquire() as con:
+            await con.execute("SELECT set_config('app.org_id', $1, false)", org_id or "")
+            yield con
+
     async def ensure_dev_user(self, user_id: str, org_id: str = "org_dev") -> None:
         """Dev convenience: FK targets must exist. Seed org+user idempotently."""
-        async with self._pool.acquire() as con:
+        async with self._acquire(org_id) as con:
             await con.execute(
                 "INSERT INTO orgs(id, name) VALUES($1,$1) ON CONFLICT (id) DO NOTHING", org_id
             )
@@ -139,7 +153,7 @@ class PgStore:
             args.append(day)
             clauses.append(f"day=${len(args)}")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        async with self._pool.acquire() as con:
+        async with self._acquire(org_id) as con:
             rows = await con.fetch(
                 f"SELECT {self._USAGE_COLUMNS} FROM usage_daily {where} "
                 "ORDER BY day DESC, org_id, user_id, model, origin",
@@ -158,7 +172,7 @@ class PgStore:
             args.append(org_id)
             clauses.append(f"org_id=${len(args)}")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        async with self._pool.acquire() as con:
+        async with self._acquire(org_id) as con:
             rows = await con.fetch(
                 f"SELECT {self._AUDIT_COLUMNS} FROM audit_log {where} ORDER BY ts DESC, id DESC",
                 *args,
@@ -182,7 +196,7 @@ class PgStore:
             args.append(status)
             clauses.append(f"status=${len(args)}")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        async with self._pool.acquire() as con:
+        async with self._acquire(org_id) as con:
             rows = await con.fetch(
                 f"SELECT {self._USER_COLUMNS} FROM users {where} "
                 "ORDER BY created_at DESC, id DESC",
@@ -200,7 +214,7 @@ class PgStore:
             args.append(org_id)
             clauses.append(f"org_id=${len(args)}")
         extra = f"AND {clauses[0]}" if clauses else ""
-        async with self._pool.acquire() as con:
+        async with self._acquire(org_id) as con:
             rows = await con.fetch(
                 f"SELECT {self._JOB_COLUMNS} FROM scheduled_jobs "
                 f"WHERE status != 'deleted' {extra} ORDER BY created_at DESC, id DESC",
@@ -219,7 +233,7 @@ class PgStore:
             args.append(org_id)
             clauses.append(f"u.org_id=${len(args)}")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        async with self._pool.acquire() as con:
+        async with self._acquire(org_id) as con:
             rows = await con.fetch(
                 f"SELECT {self._SANDBOX_COLUMNS} FROM sandboxes s "
                 f"JOIN users u ON u.id = s.user_id {where} "

@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
-from fastapi import Header
+from fastapi import Header, HTTPException
 
 DEV_USER = "usr_dev"  # fallback identity when no/invalid bearer token (§13.4)
 DEV_ORG = "org_1"     # org with seeded tool_policies (§9.4)
@@ -71,13 +72,19 @@ def current_identity(authorization: str | None = Header(default=None)) -> tuple[
     """Resolve (user_id, org_id) from a Bearer token, or fall back to the dev identity.
 
     Present + valid auth-service RS256 token -> (sub, org_id).
-    Absent OR invalid -> (DEV_USER, DEV_ORG) so header-less callers keep working.
+    Absent -> (DEV_USER, DEV_ORG) so header-less callers keep working.
+    Present but INVALID -> fail CLOSED in prod (401), dev fallback otherwise.
     """
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:].strip()
         try:
             claims = verify_token(token)
-        except Exception:  # noqa: BLE001 — any token problem => dev fallback (§13.4)
+        except Exception:  # noqa: BLE001 — a present-but-invalid token
+            # Fail closed in prod: a forged/expired token must NEVER be accepted as the dev
+            # identity (mirrors the gateway's TASK_JWT_SECRET prod guard). Dev/test keeps the
+            # fallback so the no-login web app and header-less tests work unchanged.
+            if os.getenv("OLMA_ENV") == "prod":
+                raise HTTPException(status_code=401, detail="invalid token")
             return DEV_USER, DEV_ORG
         sub = claims.get("sub")
         if sub:

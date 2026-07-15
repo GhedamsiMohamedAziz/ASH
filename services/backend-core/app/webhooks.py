@@ -97,17 +97,20 @@ def header_names(source: str) -> dict[str, str | None]:
     return _SOURCE_HEADERS.get(source, _SOURCE_HEADERS["_default"])
 
 
-def resolve_delivery_id(source: str, delivery_header: str, body: bytes) -> str | None:
+def resolve_delivery_id(source: str, delivery_header: str, body: bytes,
+                        ts: str | None = None) -> str | None:
     """The dedup/idempotency delivery value, per source (§15.8 #1). Never skipped:
 
       • github → the REQUIRED X-GitHub-Delivery (always unique). Empty → None (caller rejects).
-      • other  → sha256 of the raw SIGNED body. The unsigned X-Delivery-Id header is NOT
-                 trusted for dedup (an attacker could vary it to bypass dedup while replaying
-                 the exact signed (ts, body)); the signed-body hash cannot be forged and is
-                 distinct per event (so a no-id payload still dedups, §15.8 #5)."""
+      • other  → sha256 of the SIGNED timestamp + raw SIGNED body. Folding the signed ts in is
+                 what keeps two legitimately-distinct deliveries that carry an IDENTICAL payload
+                 (e.g. the same alert fired at different times) from colliding on sha256(body)
+                 alone and having one silently dropped. The ts is bound into the HMAC, so it
+                 cannot be forged to bypass dedup; the unsigned X-Delivery-Id header is still
+                 NOT trusted (an attacker could vary it to replay the exact signed (ts, body))."""
     if header_names(source).get("scheme") == "github":
         return delivery_header or None
-    return "sha256:" + hashlib.sha256(body).hexdigest()
+    return "sha256:" + hashlib.sha256((ts or "").encode() + b":" + body).hexdigest()
 
 
 def event_type_of(source: str, headers, payload: dict) -> str:
@@ -225,16 +228,27 @@ class StormControl:
         self.tripped: dict[str, int] = {}  # key -> count of suppressed deliveries (digest signal)
 
     def allow(self, key: str, now: float | None = None) -> bool:
+        """Pure check (no mutation): would an event on `key` fit within the threshold in the
+        current window? The bucket is advanced by record() ONLY after the event is actually
+        published (§15.8 #2) — so a publish failure + sender retry never double-counts the same
+        delivery toward the storm threshold."""
+        now = time.time() if now is None else now
+        start, count = self._buckets.get(key, (now, 0))
+        if now - start >= self.window:
+            count = 0  # window rolled over
+        return count < self.threshold
+
+    def record(self, key: str, now: float | None = None) -> None:
+        """Advance the fixed-window bucket for an ACCEPTED (published) event."""
         now = time.time() if now is None else now
         start, count = self._buckets.get(key, (now, 0))
         if now - start >= self.window:
             start, count = now, 0
-        count += 1
-        self._buckets[key] = (start, count)
-        if count > self.threshold:
-            self.tripped[key] = self.tripped.get(key, 0) + 1
-            return False
-        return True
+        self._buckets[key] = (start, count + 1)
+
+    def record_suppressed(self, key: str) -> None:
+        """Digest/pause signal: count a storm-suppressed delivery for `key` (§15.8)."""
+        self.tripped[key] = self.tripped.get(key, 0) + 1
 
     def clear(self) -> None:
         self._buckets.clear()

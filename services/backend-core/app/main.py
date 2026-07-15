@@ -219,7 +219,7 @@ def connect(body: dict, identity: tuple[str, str] = Depends(current_identity)) -
         with httpx.Client(timeout=10) as http:
             r = http.post(f"{MCP_GATEWAY_URL}/v1/connect", json={
                 "userId": user_id, "provider": provider, "token": body.get("token"),
-            })
+            }, headers={"X-Service-Token": GATEWAY_ADMIN_TOKEN})
             r.raise_for_status()
             return r.json()
     except Exception:  # noqa: BLE001 — gateway down must not break the connect flow
@@ -441,13 +441,17 @@ async def admin_list_audit(
     cursor: str | None = None, limit: int = 50, org: str | None = None,
     authorization: str | None = Header(default=None),
 ) -> Page | JSONResponse:
-    _claims, denied = _require_admin(authorization)
+    claims, denied = _require_admin(authorization)
     if denied:
         return denied
     limit = max(1, min(limit, 100))
     if store.db is None:
         return Page(items=[], next_cursor=None)
-    items = await store.db.list_audit_log(org_id=org)  # append-only, read-only
+    # Use the VERIFIED scope, never the raw ?org= param: an org admin is forced to their own
+    # org (a client can never widen it); only a platform_admin may target another org (§24.1).
+    scope = _admin_org_scope(claims)
+    org_filter = org if claims.get("platform_admin") else scope
+    items = await store.db.list_audit_log(org_id=org_filter)  # append-only, read-only
     start = _decode_cursor(cursor) if cursor else 0
     window = items[start : start + limit]
     next_cursor = _encode_cursor(start + limit) if start + limit < len(items) else None
@@ -459,13 +463,17 @@ async def admin_list_usage(
     cursor: str | None = None, limit: int = 50, org: str | None = None, day: str | None = None,
     authorization: str | None = Header(default=None),
 ) -> Page | JSONResponse:
-    _claims, denied = _require_admin(authorization)
+    claims, denied = _require_admin(authorization)
     if denied:
         return denied
     limit = max(1, min(limit, 100))
     if store.db is None:
         return Page(items=[], next_cursor=None)
-    items = await store.db.list_usage_daily(org_id=org, day=day)
+    # Verified scope, never the raw ?org= param (see admin_list_audit): org admin -> own org,
+    # platform_admin -> may target another org.
+    scope = _admin_org_scope(claims)
+    org_filter = org if claims.get("platform_admin") else scope
+    items = await store.db.list_usage_daily(org_id=org_filter, day=day)
     start = _decode_cursor(cursor) if cursor else 0
     window = items[start : start + limit]
     next_cursor = _encode_cursor(start + limit) if start + limit < len(items) else None
@@ -655,6 +663,9 @@ LLM_PROXY_URL = os.getenv("LLM_PROXY_URL")
 # header is the in-process defense-in-depth check. Unset => fail-closed (nobody gets in), never
 # an accidental open door in an env that forgot to configure it.
 INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN")
+# Shared secret for the gateway's now-authenticated POST /v1/connect (credential mutation).
+# Dev default matches the gateway's own dev fallback; prod injects the real deploy-time secret.
+GATEWAY_ADMIN_TOKEN = os.getenv("GATEWAY_ADMIN_TOKEN", "dev-gateway-admin-token")
 
 
 def _replay_approved_tool(appr) -> dict | None:
@@ -885,7 +896,8 @@ async def webhook_ingress(source: str, request: Request) -> JSONResponse:
 
     # 5) Delivery id for dedup — REQUIRED, fail-closed, NEVER skipped (#1). github must send a
     # non-empty X-GitHub-Delivery; other sources dedup on sha256 of the signed body.
-    delivery = resolve_delivery_id(source, request.headers.get(names["delivery"], ""), raw)
+    delivery = resolve_delivery_id(source, request.headers.get(names["delivery"], ""), raw,
+                                   ts_header)
     if not delivery:
         return _error(401, "E_AUTH_INVALID_TOKEN", "missing webhook delivery id")
 
@@ -910,17 +922,20 @@ async def webhook_ingress(source: str, request: Request) -> JSONResponse:
         return JSONResponse(status_code=200, content={"status": "no_match", "fanned_out": 0})
 
     # 8) Storm control keyed per (source, org, automation) (#2) — a flood throttles ONLY that
-    # target. Suppressed targets are recorded for the digest (StormControl.tripped). When
-    # EVERYTHING is suppressed the delivery dedup key is NOT consumed, so the sender's retry
-    # (or a digest sweep) can still deliver — a suppressed event is never permanently lost.
+    # target. allow() is a pure check here; the bucket is advanced in step 9 only for a target
+    # whose publish actually succeeds, so a 502-retry never double-counts. Suppressed targets
+    # are recorded for the digest (StormControl.tripped). When EVERYTHING is suppressed the
+    # delivery dedup key is NOT consumed, so the sender's retry (or a digest sweep) can still
+    # deliver — a suppressed event is never permanently lost.
     to_publish: list[dict] = []
     suppressed = 0
     for inbound in inbounds:
-        storm_key = inbound.pop("_storm_key")
+        storm_key = inbound["_storm_key"]
         if webhook_storm.allow(storm_key, now):
             to_publish.append(inbound)
         else:
             suppressed += 1
+            webhook_storm.record_suppressed(storm_key)
     if not to_publish:
         return JSONResponse(status_code=200, content={
             "status": "storm_paused", "fanned_out": 0, "suppressed": suppressed})
@@ -928,14 +943,24 @@ async def webhook_ingress(source: str, request: Request) -> JSONResponse:
     # 9) Publish each InboundMessage. Synchronous (not a BackgroundTask) so dedup-on-SUCCESS
     # holds: the delivery is marked ONLY after every publish succeeds — a publish failure
     # returns an error WITHOUT consuming the dedup key, so the webhook retry re-processes it
-    # (mirrors the cron fire_job dedup-on-success rule, ADR-016 / §15.6).
+    # (mirrors the cron fire_job dedup-on-success rule, ADR-016 / §15.6). Storm buckets are
+    # advanced only for events that actually published (after the loop), never on a failure.
+    published_keys: list[str] = []
     try:
         for inbound in to_publish:
+            storm_key = inbound.pop("_storm_key")
             await bus.publish(SUBJECT_INBOUND, inbound, message_id=inbound["idempotency_key"])
+            published_keys.append(storm_key)
     except Exception as exc:  # noqa: BLE001 — a failed publish must not consume the dedup key
         return _error(502, "E_TOOL_UPSTREAM_ERROR", f"webhook fan-out failed: {str(exc)[:120]}")
+    for storm_key in published_keys:
+        webhook_storm.record(storm_key, now)
 
-    webhook_dedup.mark(delivery, now)
+    # dedup-on-SUCCESS, but ONLY when nothing was suppressed: a partially-suppressed delivery
+    # must stay retryable so the suppressed automation(s) are not lost forever — consuming the
+    # dedup key here would drop them permanently (#2).
+    if suppressed == 0:
+        webhook_dedup.mark(delivery, now)
     return JSONResponse(status_code=202, content={
         "status": "accepted", "fanned_out": len(to_publish), "suppressed": suppressed})
 

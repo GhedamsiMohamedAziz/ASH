@@ -51,8 +51,8 @@ class _FakeClient:
         return _FakeResp({"connections": [{"provider": "github", "connected": True},
                                           {"provider": "slack", "connected": True}]})
 
-    def post(self, url, json=None):
-        _FakeClient.last_post = (url, json)
+    def post(self, url, json=None, headers=None):
+        _FakeClient.last_post = (url, json, headers)
         return _FakeResp({"connected": True, "provider": json["provider"]})
 
 
@@ -82,6 +82,23 @@ def test_minted_token_sets_identity(client):
 def test_invalid_token_falls_back_to_dev(client):
     h = {"Authorization": "Bearer not.a.valid.token"}
     assert client.get("/api/v1/me", headers=h).json()["user_id"] == "usr_dev"
+
+
+# --------------------------------------------------------------- (2b) prod fails CLOSED (FIX 5)
+def test_prod_invalid_token_is_401(client, monkeypatch):
+    # A forged/expired token must NOT be silently accepted as the dev identity in prod.
+    monkeypatch.setenv("OLMA_ENV", "prod")
+    h = {"Authorization": "Bearer not.a.valid.token"}
+    r = client.get("/api/v1/me", headers=h)
+    assert r.status_code == 401
+
+
+def test_non_prod_invalid_token_preserves_dev_fallback(client, monkeypatch):
+    # Unset OLMA_ENV keeps the dev/test fallback so header-less/no-login flows work unchanged.
+    monkeypatch.delenv("OLMA_ENV", raising=False)
+    h = {"Authorization": "Bearer not.a.valid.token"}
+    r = client.get("/api/v1/me", headers=h)
+    assert r.status_code == 200 and r.json()["user_id"] == "usr_dev"
 
 
 # --------------------------------------------------------------- (3) /me connections from gateway
@@ -119,9 +136,11 @@ def test_connect_proxies_to_gateway(client, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"connected": True, "provider": "github"}
     # Proxied with the current user + provider + token.
-    url, payload = _FakeClient.last_post
+    url, payload, headers = _FakeClient.last_post
     assert url == "http://gw.test/v1/connect"
     assert payload == {"userId": "usr_42", "provider": "github", "token": "ghp_x"}
+    # The now-authenticated gateway /v1/connect requires the service token (credential-poisoning fix).
+    assert headers and headers.get("X-Service-Token") == main.GATEWAY_ADMIN_TOKEN
 
 
 def test_connect_graceful_when_gateway_unset(client, monkeypatch):
