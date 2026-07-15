@@ -6,7 +6,8 @@ import { McpGateway, type ToolCall } from "./gateway.ts";
 import { GithubMcp, StubBackend, type GithubBackend } from "../../mcp-servers/github/src/github.ts";
 import { RestBackend } from "../../mcp-servers/github/src/rest.ts";
 import { CredentialResolver, InMemoryVault, CredentialMissing } from "./vault.ts";
-import { loadJwks, verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
+import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
+import { ReloadingJwks, DEFAULT_JWKS_RELOAD_SECONDS } from "./jwks-reload.ts";
 
 // Module-level Vault + resolver: the ONE credential store shared by the gateway's per-call
 // injection (resolveCredential) and the HTTP connect surface (POST /v1/connect). Storing a token
@@ -29,17 +30,34 @@ const SECRET = process.env.TASK_JWT_SECRET
 // JWKS and rejects unknown kids / wrong alg fail-closed.
 const TASK_JWT_ALG = process.env.TASK_JWT_ALG ?? "HS256";
 
+// The live JWKS source for ES256 mode (null in the default HS256 path → no reload timer). Held at
+// module level so shutdown/tests can stop the interval via stopJwksReload().
+let jwksSource: ReloadingJwks | null = null;
+
 // Build the verification strategy passed to the gateway. HS256 → undefined (gateway uses its
-// built-in shared-secret verify, byte-identical to before). ES256 → a JWKS-backed verifier.
+// built-in shared-secret verify, byte-identical to before). ES256 → a JWKS-backed verifier that
+// reads the LIVE keyset each call, so key rollover (current+next, §13.4) needs no restart.
 function buildVerifyToken(opts: VerifyOpts): ((token: string) => Record<string, any>) | undefined {
   if (TASK_JWT_ALG === "HS256") return undefined;
   if (TASK_JWT_ALG === "ES256") {
     const jwksPath = process.env.TASK_JWT_JWKS_PATH;
     if (!jwksPath) throw new Error("TASK_JWT_JWKS_PATH must be set when TASK_JWT_ALG=ES256");
-    const jwks = loadJwks(jwksPath); // loaded once at boot; rotation = redeploy/reload
-    return (token: string) => verifyES256(token, jwks, opts);
+    // Periodic reload (default 5 min, override via TASK_JWT_JWKS_RELOAD_SECONDS): a newly-added kid
+    // is picked up live; a malformed/missing refresh RETAINS the last-good keyset (never fails-closed
+    // all tokens). Verify against current() so each call sees the freshest keys.
+    const reloadSeconds = Number(process.env.TASK_JWT_JWKS_RELOAD_SECONDS ?? DEFAULT_JWKS_RELOAD_SECONDS);
+    jwksSource?.stop(); // if rebuilt, don't leak a prior timer
+    const source = new ReloadingJwks(jwksPath, { reloadSeconds });
+    jwksSource = source;
+    return (token: string) => verifyES256(token, source.current(), opts);
   }
   throw new Error(`unsupported TASK_JWT_ALG: ${TASK_JWT_ALG}`);
+}
+
+// Stop the JWKS reload timer (clean shutdown / tests) so the interval does not leak.
+export function stopJwksReload(): void {
+  jwksSource?.stop();
+  jwksSource = null;
 }
 
 // Egress metadata (§17.6.2): search/read/list_issues ingest untrusted repo content; create/merge

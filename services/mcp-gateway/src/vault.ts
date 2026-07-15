@@ -73,24 +73,72 @@ export function providerForTool(tool: string): string {
   return tool.split(".")[0];
 }
 
+// ------------------------------------------------------------------ KMS envelope seam (ADR-019)
+// Envelope encryption: the DATA KEY that seals credentials (AES-256-GCM above) is itself encrypted
+// ("wrapped") by a Key-Encryption-Key (KEK) held by a KMS, and only unwrapped in-process at use
+// time. Same seam shape as BillingProvider (StubBilling vs real PSP) and the LLM/GitHub edges: a
+// keyless offline default (LocalKmsProvider) that keeps dev/tests unchanged, with a real cloud KMS
+// dropping in behind the identical interface — only the real one moves the KEK off-box.
+export type WrappedKey = SealedToken; // opaque envelope of the data key (LocalKms: AES-256-GCM blob)
+
+export interface KmsProvider {
+  /** Encrypt a 32-byte data key under the KEK → an opaque wrapped blob stored/held at rest. */
+  wrap(dataKey: Buffer): WrappedKey;
+  /** Decrypt a wrapped blob back to the 32-byte data key. Wrong KEK / tamper → throws (fail-closed). */
+  unwrap(wrapped: WrappedKey): Buffer;
+}
+
+// Default provider: the current in-process behavior. A local KEK (random by default, or injected)
+// wraps/unwraps the data key with the same AES-256-GCM primitive — no external calls, no key
+// material off-box, so dev stays keyless/offline. A real KMS plugs in HERE: implement KmsProvider
+// with e.g. AWS KMS Encrypt/Decrypt or GCP KMS encrypt/decrypt of the data key (the KEK never
+// leaves the KMS), then inject it via `new CredentialResolver(vault, new AwsKmsProvider(keyArn))`.
+export class LocalKmsProvider implements KmsProvider {
+  private kek: Buffer;
+  constructor(kek?: Buffer) {
+    if (kek && kek.length !== 32) throw new Error("KEK must be 32 bytes (AES-256)");
+    this.kek = kek ?? randomBytes(32);
+  }
+  wrap(dataKey: Buffer): WrappedKey {
+    if (dataKey.length !== 32) throw new Error("data key must be 32 bytes (AES-256)");
+    return seal(dataKey.toString("hex"), this.kek);
+  }
+  unwrap(wrapped: WrappedKey): Buffer {
+    return Buffer.from(open(wrapped, this.kek), "hex");
+  }
+}
+
 // The resolver the gateway calls. Decrypts the credential at call time; returns a
 // sentinel string the sandbox never sees (the gateway passes it to the MCP server
 // and it stays server-side). Throws E_CONN_NEEDS_CONNECTION if no token stored.
 export class CredentialResolver {
   private vault: SecretBackend;
-  constructor(vault: SecretBackend) {
+  private kms: KmsProvider;
+  private wrappedDataKey: WrappedKey;
+  // The KmsProvider defaults to LocalKmsProvider → the data key is the vault's key, wrapped and
+  // unwrapped in-process, so the at-rest SealedToken format is BYTE-IDENTICAL to before (credentials
+  // are still sealed with that same 32-byte data key). Inject a real KMS to move the KEK off-box.
+  constructor(vault: SecretBackend, kms: KmsProvider = new LocalKmsProvider()) {
     this.vault = vault;
+    this.kms = kms;
+    // Envelope the data key once; hold only the WRAPPED form, unwrap at use time.
+    this.wrappedDataKey = kms.wrap(vault.getEncryptionKey());
+  }
+
+  /** Unwrap the data key via the KMS at use time (never held in plaintext at rest here). */
+  private dataKey(): Buffer {
+    return this.kms.unwrap(this.wrappedDataKey);
   }
 
   /** Store a user's OAuth token, sealed. Called by the OAuth callback (AX-038). */
   store(userId: string, provider: string, token: string): void {
-    this.vault.putToken(userId, provider, seal(token, this.vault.getEncryptionKey()));
+    this.vault.putToken(userId, provider, seal(token, this.dataKey()));
   }
 
   /** Store an ORG service credential (Mode B, §3.1): one entry per org+connector,
    * keyed as `org:<orgId>`, e.g. a GitHub App installation token. */
   storeOrg(orgId: string, provider: string, token: string): void {
-    this.vault.putToken(`org:${orgId}`, provider, seal(token, this.vault.getEncryptionKey()));
+    this.vault.putToken(`org:${orgId}`, provider, seal(token, this.dataKey()));
   }
 
   /** Resolve + decrypt the credential for a tool call (§13.2).
@@ -102,7 +150,7 @@ export class CredentialResolver {
     const holder = orgId ? `org:${orgId}` : subject;
     const sealed = this.vault.getToken(holder, provider);
     if (!sealed) throw new CredentialMissing(provider);
-    return open(sealed, this.vault.getEncryptionKey());
+    return open(sealed, this.dataKey());
   }
 
   /** List the providers a holder is connected to. `orgId` set → the org's service
