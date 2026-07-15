@@ -37,7 +37,7 @@ function Row({ r, latencyMs }: { r: ViewModel; latencyMs?: number }) {
       const ok = r.color === "green";
       const bad = r.color === "rose";
       const Icon = ok ? CheckCircle2 : bad ? XCircle : Wrench;
-      const tone = ok ? "text-emerald-400" : bad ? "text-rose-400" : "text-cyan-400";
+      const tone = ok ? "text-green" : bad ? "text-rose" : "text-cyan";
       return (
         <div className={`flex items-center gap-2 font-mono text-xs ${tone}`}>
           <Icon className="size-3.5 shrink-0" /> {r.text}
@@ -46,12 +46,12 @@ function Row({ r, latencyMs }: { r: ViewModel; latencyMs?: number }) {
     }
     case "cron":
       return (
-        <div className="flex items-center gap-2 text-xs text-amber-400">
+        <div className="flex items-center gap-2 text-xs text-amber">
           <Repeat className="size-3.5 shrink-0" /> {r.text}
         </div>
       );
     case "escalation":
-      return <div className="text-xs italic text-cyan-400">{r.text}</div>;
+      return <div className="text-xs italic text-cyan">{r.text}</div>;
     case "done":
       return (r.text || latencyMs != null) ? (
         <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -61,7 +61,7 @@ function Row({ r, latencyMs }: { r: ViewModel; latencyMs?: number }) {
       ) : null;
     case "error":
       return (
-        <div className="flex items-center gap-2 text-sm text-rose-400">
+        <div className="flex items-center gap-2 text-sm text-rose">
           <XCircle className="size-4 shrink-0" /> {r.text}
         </div>
       );
@@ -149,15 +149,14 @@ export function Chat({ conversationId, locale = "fr", demo = false, onNew }:
   };
 
   const statusBadge = demo
-    ? <Badge variant="secondary" className="text-amber-400">démo</Badge>
+    ? <Badge variant="secondary" className="text-amber">démo</Badge>
     : connected
-      ? <Badge variant="secondary" className="text-emerald-400">connecté</Badge>
+      ? <Badge variant="secondary" className="text-green">connecté</Badge>
       : <Badge variant="outline" className="text-muted-foreground">hors ligne</Badge>;
 
   return (
-    <div className="flex h-full min-w-0 flex-col border-r bg-background">
-      <header className="flex items-center gap-3 border-b px-4 py-3">
-        <span className="font-semibold tracking-tight">Axone</span>
+    <div className="flex h-full min-w-0 flex-col border-r border-border bg-background">
+      <header className="flex items-center gap-3 border-b border-border px-4 py-3">
         <span className="font-mono text-xs text-muted-foreground">{conversationId}</span>
         <div className="ml-auto flex items-center gap-2">
           {statusBadge}
@@ -193,14 +192,14 @@ export function Chat({ conversationId, locale = "fr", demo = false, onNew }:
               )}
               {(turns[ti] ? reduceStream(turns[ti], locale) : []).map((r: ViewModel, ri: number) => (
                 r.interactive ? (
-                  <Card key={`${ti}-${ri}`} className="border-amber-500/40 bg-amber-500/5">
+                  <Card key={`${ti}-${ri}`} className="border-amber/40 bg-amber/5">
                     <CardContent className="flex flex-col gap-3 p-3">
-                      <div className="flex items-center gap-2 font-medium text-amber-400">
+                      <div className="flex items-center gap-2 font-medium text-amber">
                         <ShieldAlert className="size-4" /> Approbation requise
                       </div>
                       <p className="font-mono text-sm">{r.text}</p>
                       <div className="flex gap-2">
-                        <Button size="sm" className="bg-emerald-600 text-white hover:bg-emerald-500"
+                        <Button size="sm" className="bg-green text-ink hover:bg-green/90"
                           disabled={!r.approvalId}
                           onClick={() => r.approvalId && approve(r.approvalId, "approve")}>Approuver</Button>
                         <Button size="sm" variant="destructive"

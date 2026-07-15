@@ -12,7 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { ShieldCheck, Shield } from "lucide-react";
 
 const STATUS_CLASS: Record<string, string> = {
-  green: "text-emerald-400", amber: "text-amber-400", rose: "text-rose-400", muted: "text-muted-foreground",
+  green: "text-green", amber: "text-amber", rose: "text-rose", muted: "text-muted-foreground",
 };
 
 export function AuditPanel({ entries, conversationId, live = true }:
@@ -42,13 +42,13 @@ export function AuditPanel({ entries, conversationId, live = true }:
     <aside className="flex h-full flex-col bg-background">
       <header className="flex flex-col gap-2 border-b px-4 py-3">
         <div className="flex items-center gap-2 font-semibold">
-          <ShieldCheck className="size-4 text-emerald-400" /> Journal d'audit
+          <ShieldCheck className="size-4 text-green" /> Journal d'audit
         </div>
         <div className="flex flex-wrap gap-1.5 text-xs">
-          <Badge variant="secondary" className="text-emerald-400">{s.ok} autorisés</Badge>
-          {s.needs_approval > 0 && <Badge variant="secondary" className="text-amber-400">{s.needs_approval} en attente</Badge>}
-          {s.denied > 0 && <Badge variant="secondary" className="text-rose-400">{s.denied} refusés</Badge>}
-          {s.redactedCalls > 0 && <Badge variant="secondary" className="text-cyan-400">{s.redactedCalls} caviardés</Badge>}
+          <Badge variant="secondary" className="text-green">{s.ok} autorisés</Badge>
+          {s.needs_approval > 0 && <Badge variant="secondary" className="text-amber">{s.needs_approval} en attente</Badge>}
+          {s.denied > 0 && <Badge variant="secondary" className="text-rose">{s.denied} refusés</Badge>}
+          {s.redactedCalls > 0 && <Badge variant="secondary" className="text-cyan">{s.redactedCalls} caviardés</Badge>}
         </div>
       </header>
 
@@ -63,7 +63,7 @@ export function AuditPanel({ entries, conversationId, live = true }:
                 <span className="font-mono">{r.tool}</span>
                 <span className="text-xs text-muted-foreground">{r.who}</span>
                 {r.redactions.length > 0 && (
-                  <span className="flex items-center gap-1 text-xs text-cyan-400">
+                  <span className="flex items-center gap-1 text-xs text-cyan">
                     <Shield className="size-3" /> {r.redactions.join(", ")}
                   </span>
                 )}

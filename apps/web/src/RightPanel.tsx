@@ -24,7 +24,7 @@ interface Memory extends MemoryItem { source_trust?: string }
 
 function TrustBadge({ trust }: { trust?: string }) {
   if (trust === "untrusted")
-    return <Badge variant="secondary" className="text-amber-400">non fiable</Badge>;
+    return <Badge variant="secondary" className="text-amber">non fiable</Badge>;
   return <Badge variant="outline" className="text-muted-foreground">fiable</Badge>;
 }
 
@@ -147,7 +147,7 @@ function ConnectorsTab() {
                 </span>
                 <div className="ml-auto flex items-center gap-2">
                   {c.connected ? (
-                    <Badge variant="secondary" className="text-emerald-400">connecté</Badge>
+                    <Badge variant="secondary" className="text-green">connecté</Badge>
                   ) : (
                     <>
                       <Badge variant="outline" className="text-muted-foreground">non connecté</Badge>
@@ -183,7 +183,7 @@ function ConnectorsTab() {
                     <Button size="sm" variant="ghost" onClick={cancel} disabled={busy}>Annuler</Button>
                   </div>
                   {error && (
-                    <p className="flex items-center gap-1.5 text-xs text-rose-400">
+                    <p className="flex items-center gap-1.5 text-xs text-rose">
                       <XCircle className="size-3.5 shrink-0" /> {error}
                     </p>
                   )}
@@ -253,7 +253,7 @@ function AutomationsTab() {
             <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Automatisations
             </span>
-            <span className="font-mono text-[11px] text-amber-400">{automationQuota(list)}</span>
+            <span className="font-mono text-[11px] text-amber">{automationQuota(list)}</span>
           </div>
         )}
         {jobs !== null && list.length === 0 && (
@@ -264,10 +264,10 @@ function AutomationsTab() {
           return (
             <div key={row.id} className="flex flex-col gap-1.5 rounded-md border bg-card px-3 py-2">
               <div className="flex items-center gap-2">
-                <RotateCw className={`size-3.5 shrink-0 ${row.color === "amber" ? "text-amber-400" : "text-muted-foreground"}`} />
+                <RotateCw className={`size-3.5 shrink-0 ${row.color === "amber" ? "text-amber" : "text-muted-foreground"}`} />
                 <span className="text-sm text-card-foreground">{row.title}</span>
                 <div className="ml-auto flex items-center gap-2">
-                  <Badge variant="secondary" className={row.color === "amber" ? "text-amber-400" : "text-muted-foreground"}>
+                  <Badge variant="secondary" className={row.color === "amber" ? "text-amber" : "text-muted-foreground"}>
                     {row.statusLabel}
                   </Badge>
                   <Button size="sm" variant="outline" disabled={busyId === job.id} onClick={() => toggle(job)}>

@@ -36,3 +36,4 @@ dist/
 # Runtime-generated dev keys (auth-service RS256) — never commit
 services/*/keys/
 *.pem
+.gstack/

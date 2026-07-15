@@ -1,54 +1,62 @@
+@import "./tokens.css";
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
 
+/* Control room is always-dark (main.tsx forces the `dark` class), so the palette lives
+ * directly on :root rather than gated behind `.dark` — there is no light theme to fall
+ * back to. Values are wired from tokens.css (the single hex/font source of truth). */
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--panel);
+  --card-foreground: var(--text);
+  --popover: var(--panel);
+  --popover-foreground: var(--text);
+  --primary: var(--cyan);
+  --primary-foreground: var(--ink);
+  --secondary: var(--panel-2);
+  --secondary-foreground: var(--text);
+  --muted: var(--panel-2);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--panel-2);
+  --accent-foreground: var(--text);
+  --destructive: var(--rose);
+  --destructive-foreground: var(--ink);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--cyan);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--panel);
+  --card-foreground: var(--text);
+  --popover: var(--panel);
+  --popover-foreground: var(--text);
+  --primary: var(--cyan);
+  --primary-foreground: var(--ink);
+  --secondary: var(--panel-2);
+  --secondary-foreground: var(--text);
+  --muted: var(--panel-2);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--panel-2);
+  --accent-foreground: var(--text);
+  --destructive: var(--rose);
+  --destructive-foreground: var(--ink);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--cyan);
 }
 
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -64,12 +72,33 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
+  /* Panel surfaces (control-room chrome, distinct from card/popover semantics). */
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+
+  /* Strict semantic accents (§4.5) — flat colours, not scales. Use `text-cyan`,
+   * `bg-amber/10`, `border-rose/40`, etc. Never Tailwind's built-in cyan-400/amber-400/
+   * rose-400/emerald-400 palette for these meanings — this is the one true set. */
+  --color-cyan: var(--cyan);
+  --color-amber: var(--amber);
+  --color-rose: var(--rose);
+  --color-green: var(--green);
+  --color-ink: var(--ink);
+
+  /* Typography (§4.5): Space Grotesk for headings/UI chrome, Inter for body copy,
+   * IBM Plex Mono for technical labels/tools/data. System-fallback stacks only —
+   * no network font dependency, so the app renders identically offline. */
+  --font-sans: var(--font-body);
+  --font-heading: var(--font-ui);
+  --font-mono: var(--font-mono);
 }
 
 @layer base {
   * { border-color: var(--color-border); }
-  body { background-color: var(--color-background); color: var(--color-foreground); }
+  body { background-color: var(--color-background); color: var(--color-foreground); font-family: var(--font-sans); }
 }
