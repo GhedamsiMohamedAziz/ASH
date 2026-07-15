@@ -1,0 +1,8 @@
+{
+  "name": "@olma/mcp-server-template",
+  "version": "0.1.0",
+  "description": "Reusable MCP connector scaffold (instructions.md §14.3, N3 'à créer une fois') — copy this directory to bootstrap a new connector in ~80 lines of domain code.",
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.ts" },
+  "engines": { "node": ">=23" }
+}
