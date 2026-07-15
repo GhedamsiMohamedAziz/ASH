@@ -1,0 +1,141 @@
+{"name": "cs-branch-convention", "kind": "classify", "inp": "what is our branch naming convention?", "expect": "chat_simple", "recurrence": false}
+{"name": "cs-what-pr", "kind": "classify", "inp": "what is a pull request?", "expect": "chat_simple"}
+{"name": "cs-staging-prod-diff", "kind": "classify", "inp": "what is the difference between staging and prod?", "expect": "chat_simple"}
+{"name": "cs-sla", "kind": "classify", "inp": "what is our SLA for incidents?", "expect": "chat_simple"}
+{"name": "cs-what-ci", "kind": "classify", "inp": "what is continuous integration?", "expect": "chat_simple"}
+{"name": "cs-what-webhook", "kind": "classify", "inp": "what is a webhook?", "expect": "chat_simple"}
+{"name": "cs-sandbox-purpose", "kind": "classify", "inp": "what is the purpose of the sandbox?", "expect": "chat_simple"}
+{"name": "cs-auth-work", "kind": "classify", "inp": "how does authentication work here?", "expect": "chat_simple"}
+{"name": "cs-cache-behave", "kind": "classify", "inp": "how does the cache layer behave?", "expect": "chat_simple"}
+{"name": "cs-flags", "kind": "classify", "inp": "how do feature flags work in our stack?", "expect": "chat_simple"}
+{"name": "cs-why-postgres", "kind": "classify", "inp": "why is Postgres our default database?", "expect": "chat_simple"}
+{"name": "cs-why-trunk", "kind": "classify", "inp": "why do we prefer trunk-based development?", "expect": "chat_simple"}
+{"name": "cs-why-incident", "kind": "classify", "inp": "why did the last incident happen?", "expect": "chat_simple"}
+{"name": "cs-cache-fr", "kind": "classify", "inp": "comment fonctionne le cache ?", "expect": "chat_simple"}
+{"name": "cs-auth-fr", "kind": "classify", "inp": "comment marche l'authentification ?", "expect": "chat_simple"}
+{"name": "cs-why-postgres-fr", "kind": "classify", "inp": "pourquoi utilise-t-on Postgres ?", "expect": "chat_simple"}
+{"name": "cs-why-pipeline-slow", "kind": "classify", "inp": "pourquoi le pipeline est-il lent ?", "expect": "chat_simple"}
+{"name": "cs-branch-fr", "kind": "classify", "inp": "quelle est notre convention de nommage des branches ?", "expect": "chat_simple"}
+{"name": "cs-staging-prod-fr", "kind": "classify", "inp": "quelle est la différence entre staging et prod ?", "expect": "chat_simple"}
+{"name": "cs-review-policy-fr", "kind": "classify", "inp": "quelle est notre politique de revue de code ?", "expect": "chat_simple"}
+{"name": "cs-what-pr-fr", "kind": "classify", "inp": "qu'est-ce qu'une pull request ?", "expect": "chat_simple"}
+{"name": "cs-what-churn-fr", "kind": "classify", "inp": "qu'est-ce que le churn ?", "expect": "chat_simple"}
+{"name": "cs-what-webhook-fr", "kind": "classify", "inp": "qu'est-ce qu'un webhook ?", "expect": "chat_simple"}
+{"name": "cs-what-sandbox-fr", "kind": "classify", "inp": "c'est quoi le sandbox ?", "expect": "chat_simple"}
+{"name": "cs-what-ci-fr", "kind": "classify", "inp": "c'est quoi la CI ?", "expect": "chat_simple"}
+{"name": "cs-what-issue-fr", "kind": "classify", "inp": "c'est quoi une issue GitHub ?", "expect": "chat_simple"}
+{"name": "cs-explain-cache-fr", "kind": "classify", "inp": "peux-tu expliquer le fonctionnement du cache ?", "expect": "chat_simple"}
+{"name": "cs-explain-branch-fr", "kind": "classify", "inp": "peux-tu expliquer notre stratégie de branches ?", "expect": "chat_simple"}
+{"name": "cs-explain-retries", "kind": "classify", "inp": "can you explain how retries work?", "expect": "chat_simple"}
+{"name": "cs-explain-incident", "kind": "classify", "inp": "can you explain the incident process?", "expect": "chat_simple"}
+{"name": "cs-oncall", "kind": "classify", "inp": "what is our on-call rotation policy?", "expect": "chat_simple"}
+{"name": "cs-idempotency", "kind": "classify", "inp": "what is idempotency?", "expect": "chat_simple"}
+{"name": "cs-ratelimit", "kind": "classify", "inp": "what is a rate limit?", "expect": "chat_simple"}
+{"name": "cs-retention", "kind": "classify", "inp": "what is our data retention period?", "expect": "chat_simple"}
+{"name": "cs-slo", "kind": "classify", "inp": "what is a service level objective?", "expect": "chat_simple"}
+{"name": "cs-secrets-handling", "kind": "classify", "inp": "how do we handle secrets in production?", "expect": "chat_simple"}
+{"name": "cs-why-feature-branches", "kind": "classify", "inp": "why do we use feature branches?", "expect": "chat_simple"}
+{"name": "cs-retention-fr", "kind": "classify", "inp": "quelle est la politique de rétention des données ?", "expect": "chat_simple"}
+{"name": "cs-queue-fr", "kind": "classify", "inp": "comment fonctionne la file d'attente ?", "expect": "chat_simple"}
+{"name": "cs-why-k8s-fr", "kind": "classify", "inp": "pourquoi avons-nous choisi Kubernetes ?", "expect": "chat_simple"}
+{"name": "cs-sev-scale", "kind": "classify", "inp": "what is our incident severity scale?", "expect": "chat_simple"}
+{"name": "cs-canary", "kind": "classify", "inp": "what is a canary release?", "expect": "chat_simple"}
+{"name": "cs-timeout", "kind": "classify", "inp": "what is our default timeout?", "expect": "chat_simple"}
+{"name": "cs-dlq", "kind": "classify", "inp": "what is a dead letter queue?", "expect": "chat_simple"}
+{"name": "cs-backoff", "kind": "classify", "inp": "how does our retry backoff work?", "expect": "chat_simple"}
+{"name": "cs-idempotence-fr", "kind": "classify", "inp": "qu'est-ce que l'idempotence ?", "expect": "chat_simple"}
+{"name": "cs-logs-fr", "kind": "classify", "inp": "comment lit-on les logs ?", "expect": "chat_simple"}
+{"name": "cs-what-sla-target", "kind": "classify", "inp": "what is our uptime target?", "expect": "chat_simple"}
+{"name": "cs-what-mcp", "kind": "classify", "inp": "what is an MCP server?", "expect": "chat_simple"}
+{"name": "cs-why-cache-expire-fr", "kind": "classify", "inp": "pourquoi le cache expire-t-il si vite ?", "expect": "chat_simple"}
+{"name": "ta-deploy-merge", "kind": "classify", "inp": "déploie fix/login sur staging et merge", "expect": "task_agentique"}
+{"name": "ta-open-pr", "kind": "classify", "inp": "ouvre une PR pour le correctif de login", "expect": "task_agentique"}
+{"name": "ta-merge-branch", "kind": "classify", "inp": "merge la branche release dans main", "expect": "task_agentique"}
+{"name": "ta-commit-push", "kind": "classify", "inp": "commit ces changements et push sur origin", "expect": "task_agentique"}
+{"name": "ta-create-issue", "kind": "classify", "inp": "crée une issue pour le bug du panier", "expect": "task_agentique"}
+{"name": "ta-fix-open-pr", "kind": "classify", "inp": "corrige le bug puis ouvre une pull request", "expect": "task_agentique"}
+{"name": "ta-push-branch", "kind": "classify", "inp": "push la branche feature/auth vers le repo", "expect": "task_agentique"}
+{"name": "ta-rebase-branch", "kind": "classify", "inp": "rebase la branche sur main", "expect": "task_agentique"}
+{"name": "ta-review-merge", "kind": "classify", "inp": "review the open PR and merge it", "expect": "task_agentique"}
+{"name": "ta-close-issue", "kind": "classify", "inp": "close the stale issue in the repo", "expect": "task_agentique"}
+{"name": "ta-create-branch", "kind": "classify", "inp": "create a new branch called feature/search", "expect": "task_agentique"}
+{"name": "ta-commit-msg", "kind": "classify", "inp": "commit the changes with a clear message", "expect": "task_agentique"}
+{"name": "ta-push-open-pr", "kind": "classify", "inp": "push to the remote and open a PR", "expect": "task_agentique"}
+{"name": "ta-create-pr-fr", "kind": "classify", "inp": "crée une pull request depuis la branche", "expect": "task_agentique"}
+{"name": "ta-fix-ci-fr", "kind": "classify", "inp": "corrige le pipeline CI cassé", "expect": "task_agentique"}
+{"name": "ta-deploy-prod-fr", "kind": "classify", "inp": "déploie sur prod après la revue", "expect": "task_agentique"}
+{"name": "ta-open-browser-fr", "kind": "classify", "inp": "ouvre le navigateur et va sur example.com", "expect": "task_agentique"}
+{"name": "ta-open-screenshot", "kind": "classify", "inp": "open the pricing page and take a screenshot", "expect": "task_agentique"}
+{"name": "ta-open-export-fr", "kind": "classify", "inp": "ouvre le dashboard et clique sur exporter", "expect": "task_agentique"}
+{"name": "ta-run-browser", "kind": "classify", "inp": "run the browser automation on the checkout flow", "expect": "task_agentique"}
+{"name": "ta-open-login-form", "kind": "classify", "inp": "open the login form and fill it", "expect": "task_agentique"}
+{"name": "ta-sql-churn-fr", "kind": "classify", "inp": "fais une requête SQL sur le churn de juin par région", "expect": "task_agentique"}
+{"name": "ta-query-users", "kind": "classify", "inp": "query the users table for inactive accounts", "expect": "task_agentique"}
+{"name": "ta-exec-query-fr", "kind": "classify", "inp": "exécute cette requête sur la base de données", "expect": "task_agentique"}
+{"name": "ta-run-migration", "kind": "classify", "inp": "run a migration on the production database", "expect": "task_agentique"}
+{"name": "ta-migrate-schema-fr", "kind": "classify", "inp": "migre le schéma de la base de données", "expect": "task_agentique"}
+{"name": "ta-analyze-db-fr", "kind": "classify", "inp": "analyse les données de churn dans la database", "expect": "task_agentique"}
+{"name": "ta-gen-sql-report", "kind": "classify", "inp": "génère un rapport SQL des ventes du T2", "expect": "task_agentique"}
+{"name": "ta-requete-base-fr", "kind": "classify", "inp": "requête la base pour les commandes en attente", "expect": "task_agentique"}
+{"name": "ta-send-slack-fr", "kind": "classify", "inp": "envoie un message à l'équipe sur Slack", "expect": "task_agentique"}
+{"name": "ta-post-slack-fr", "kind": "classify", "inp": "poste le compte-rendu dans le canal slack", "expect": "task_agentique"}
+{"name": "ta-send-channel", "kind": "classify", "inp": "send the summary to the general channel", "expect": "task_agentique"}
+{"name": "ta-post-release", "kind": "classify", "inp": "post the release notes to slack", "expect": "task_agentique"}
+{"name": "ta-send-reminder-fr", "kind": "classify", "inp": "envoie un rappel à Marie", "expect": "task_agentique"}
+{"name": "ta-cron-monday-fr", "kind": "classify", "inp": "planifie un cron chaque lundi matin", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-schedule-daily", "kind": "classify", "inp": "schedule a daily report at 9am", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-ci-nightly-fr", "kind": "classify", "inp": "configure le pipeline CI pour tourner chaque nuit", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-backup-nightly", "kind": "classify", "inp": "run the backup job every night at 2am", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-report-friday-fr", "kind": "classify", "inp": "envoie le rapport chaque vendredi à 17h", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-cron-monday-deploy", "kind": "classify", "inp": "chaque lundi, envoie le rapport hebdo", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-daily-open-dash-fr", "kind": "classify", "inp": "tous les matins, ouvre le dashboard", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-every-monday-deploy", "kind": "classify", "inp": "every monday deploy the release", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-daily-run-sync", "kind": "classify", "inp": "daily at 9am run the sync", "expect": "task_agentique", "recurrence": true}
+{"name": "ta-deploy-hotfix", "kind": "classify", "inp": "deploy the hotfix to production now", "expect": "task_agentique"}
+{"name": "ta-fix-test", "kind": "classify", "inp": "fix the failing test in the auth module", "expect": "task_agentique"}
+{"name": "ta-refactor-payment", "kind": "classify", "inp": "refactor the payment service", "expect": "task_agentique"}
+{"name": "ta-gen-docs-fr", "kind": "classify", "inp": "génère la documentation de l'API", "expect": "task_agentique"}
+{"name": "ta-analyze-latency", "kind": "classify", "inp": "analyze the latency spike from yesterday", "expect": "task_agentique"}
+{"name": "ta-build-deploy", "kind": "classify", "inp": "build and deploy the web app", "expect": "task_agentique"}
+{"name": "ta-migrate-db", "kind": "classify", "inp": "migrate the database to the new schema", "expect": "task_agentique"}
+{"name": "ta-exec-tests-fr", "kind": "classify", "inp": "exécute les tests d'intégration", "expect": "task_agentique"}
+{"name": "ta-lance-job-fr", "kind": "classify", "inp": "lance le job de nettoyage", "expect": "task_agentique"}
+{"name": "ta-search-sharepoint", "kind": "classify", "inp": "search in the sharepoint for the contract", "expect": "task_agentique"}
+{"name": "ta-cherche-repo-fr", "kind": "classify", "inp": "cherche dans le repo les usages de fetch", "expect": "task_agentique"}
+{"name": "ta-send-email-fr", "kind": "classify", "inp": "envoie un email à l'équipe support", "expect": "task_agentique"}
+{"name": "ta-open-calendar-fr", "kind": "classify", "inp": "ouvre le calendrier et crée un événement", "expect": "task_agentique"}
+{"name": "ta-post-notion-fr", "kind": "classify", "inp": "poste sur Notion le compte-rendu", "expect": "task_agentique"}
+{"name": "ta-check-sentry-fr", "kind": "classify", "inp": "vérifie sentry pour les nouvelles erreurs", "expect": "task_agentique"}
+{"name": "ta-open-outlook", "kind": "classify", "inp": "open outlook and reply to the client", "expect": "task_agentique"}
+{"name": "ta-send-quote-fr", "kind": "classify", "inp": "envoie le devis par mail au client", "expect": "task_agentique"}
+{"name": "ta-gen-diagram-fr", "kind": "classify", "inp": "génère un diagramme d'architecture", "expect": "task_agentique"}
+{"name": "ta-analyze-dump-fr", "kind": "classify", "inp": "analyse le dump mémoire du crash", "expect": "task_agentique"}
+{"name": "ta-run-linter", "kind": "classify", "inp": "run the linter and fix all warnings", "expect": "task_agentique"}
+{"name": "ta-sentry-logs-fr", "kind": "classify", "inp": "les logs sentry d'hier", "expect": "task_agentique"}
+{"name": "ta-ci-pipeline-fr", "kind": "classify", "inp": "le pipeline CI de la nuit", "expect": "task_agentique"}
+{"name": "ta-pr-42", "kind": "classify", "inp": "la pull request #42", "expect": "task_agentique"}
+{"name": "ta-db-main-fr", "kind": "classify", "inp": "notre base de données principale", "expect": "task_agentique"}
+{"name": "ta-send-now-fr", "kind": "classify", "inp": "envoie ça maintenant", "expect": "task_agentique", "recurrence": false}
+{"name": "am-bonjour", "kind": "classify", "inp": "bonjour", "expect": "ambigu"}
+{"name": "am-salut", "kind": "classify", "inp": "salut, ça va ?", "expect": "ambigu"}
+{"name": "am-merci", "kind": "classify", "inp": "merci beaucoup", "expect": "ambigu"}
+{"name": "am-churn-count-fr", "kind": "classify", "inp": "combien de clients ont churné en juin ?", "expect": "ambigu"}
+{"name": "am-hello", "kind": "classify", "inp": "hello there", "expect": "ambigu"}
+{"name": "am-jai-question-fr", "kind": "classify", "inp": "j'ai une question", "expect": "ambigu"}
+{"name": "am-aide-fr", "kind": "classify", "inp": "peux-tu m'aider ?", "expect": "ambigu"}
+{"name": "am-rapport-fr", "kind": "classify", "inp": "le rapport de la semaine dernière", "expect": "ambigu"}
+{"name": "am-meeting-fr", "kind": "classify", "inp": "à propos du dernier meeting", "expect": "ambigu"}
+{"name": "am-idea-fr", "kind": "classify", "inp": "une idée pour améliorer l'onboarding", "expect": "ambigu"}
+{"name": "am-nouvelles-fr", "kind": "classify", "inp": "des nouvelles du projet ?", "expect": "ambigu"}
+{"name": "am-mieux-fr", "kind": "classify", "inp": "on pourrait faire mieux", "expect": "ambigu"}
+{"name": "am-reunion-fr", "kind": "classify", "inp": "c'était une bonne réunion", "expect": "ambigu"}
+{"name": "am-notsure", "kind": "classify", "inp": "not sure what to do next", "expect": "ambigu"}
+{"name": "am-thanks", "kind": "classify", "inp": "thanks for the help", "expect": "ambigu"}
+{"name": "am-goodmorning", "kind": "classify", "inp": "good morning team", "expect": "ambigu", "recurrence": true}
+{"name": "am-dommage-fr", "kind": "classify", "inp": "quel dommage", "expect": "ambigu"}
+{"name": "am-reflechis-fr", "kind": "classify", "inp": "je réfléchis à voix haute", "expect": "ambigu"}
+{"name": "am-plustard-fr", "kind": "classify", "inp": "peut-être plus tard", "expect": "ambigu"}
+{"name": "am-cout-fr", "kind": "classify", "inp": "combien ça coûte ?", "expect": "ambigu"}
+{"name": "am-ok", "kind": "classify", "inp": "ok", "expect": "ambigu"}
+{"name": "am-recur-friday-fr", "kind": "classify", "inp": "chaque vendredi à 17h", "expect": "ambigu", "recurrence": true}
+{"name": "am-weekly-report", "kind": "classify", "inp": "weekly report please", "expect": "ambigu", "recurrence": true}
