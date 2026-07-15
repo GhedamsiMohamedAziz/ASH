@@ -22,21 +22,21 @@
 {"name": "m-tp-paul-quit", "kind": "memory_hygiene", "inp": "Paul is quitting next month", "expect": "blocked"}
 {"name": "m-tp-nadia-poste", "kind": "memory_hygiene", "inp": "Nadia cherche un nouveau poste", "expect": "blocked"}
 {"name": "m-tp-paul-partir", "kind": "memory_hygiene", "inp": "Paul va partir en fin d'année", "expect": "blocked"}
-{"name": "gap-gho", "kind": "memory_hygiene", "inp": "remember gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "KNOWN_GAP"}
-{"name": "gap-skant", "kind": "memory_hygiene", "inp": "anthropic key sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "KNOWN_GAP"}
-{"name": "gap-openai", "kind": "memory_hygiene", "inp": "openai key sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "KNOWN_GAP"}
-{"name": "gap-jwt", "kind": "memory_hygiene", "inp": "token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0", "expect": "KNOWN_GAP"}
-{"name": "gap-urlcreds", "kind": "memory_hygiene", "inp": "connect to https://admin:hunter2@internal.example.com/db", "expect": "KNOWN_GAP"}
-{"name": "gap-glpat", "kind": "memory_hygiene", "inp": "gitlab token glpat-abcdefghij1234567890", "expect": "KNOWN_GAP"}
-{"name": "gap-gcp", "kind": "memory_hygiene", "inp": "google api key AIzaSyD-1234567890abcdefghijklmnopqrstuv", "expect": "KNOWN_GAP"}
-{"name": "gap-tp-burnout", "kind": "memory_hygiene", "inp": "Y est en burnout", "expect": "KNOWN_GAP"}
-{"name": "gap-tp-licencie", "kind": "memory_hygiene", "inp": "Z va être licencié", "expect": "KNOWN_GAP"}
-{"name": "gap-tp-depression", "kind": "memory_hygiene", "inp": "Karim est en dépression", "expect": "KNOWN_GAP"}
-{"name": "gap-tp-prime", "kind": "memory_hygiene", "inp": "Sophie touche une prime de 10k", "expect": "KNOWN_GAP"}
-{"name": "gap-tp-accent-eric", "kind": "memory_hygiene", "inp": "Éric cherche un autre job", "expect": "KNOWN_GAP"}
-{"name": "gap-tp-accent-lea", "kind": "memory_hygiene", "inp": "Léa va partir en fin d'année", "expect": "KNOWN_GAP"}
+{"name": "gap-gho", "kind": "memory_hygiene", "inp": "remember gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "blocked"}
+{"name": "gap-skant", "kind": "memory_hygiene", "inp": "anthropic key sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "blocked"}
+{"name": "gap-openai", "kind": "memory_hygiene", "inp": "openai key sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "blocked"}
+{"name": "gap-jwt", "kind": "memory_hygiene", "inp": "token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0", "expect": "blocked"}
+{"name": "gap-urlcreds", "kind": "memory_hygiene", "inp": "connect to https://admin:hunter2@internal.example.com/db", "expect": "blocked"}
+{"name": "gap-glpat", "kind": "memory_hygiene", "inp": "gitlab token glpat-abcdefghij1234567890", "expect": "blocked"}
+{"name": "gap-gcp", "kind": "memory_hygiene", "inp": "google api key AIzaSyD-1234567890abcdefghijklmnopqrstuv", "expect": "blocked"}
+{"name": "gap-tp-burnout", "kind": "memory_hygiene", "inp": "Y est en burnout", "expect": "blocked"}
+{"name": "gap-tp-licencie", "kind": "memory_hygiene", "inp": "Z va être licencié", "expect": "blocked"}
+{"name": "gap-tp-depression", "kind": "memory_hygiene", "inp": "Karim est en dépression", "expect": "blocked"}
+{"name": "gap-tp-prime", "kind": "memory_hygiene", "inp": "Sophie touche une prime de 10k", "expect": "blocked"}
+{"name": "gap-tp-accent-eric", "kind": "memory_hygiene", "inp": "Éric cherche un autre job", "expect": "blocked"}
+{"name": "gap-tp-accent-lea", "kind": "memory_hygiene", "inp": "Léa va partir en fin d'année", "expect": "blocked"}
 {"name": "m-tp-any-leading-word", "kind": "memory_hygiene", "inp": "mon collègue cherche un autre job", "expect": "blocked"}
-{"name": "gap-tp-phrase-start", "kind": "memory_hygiene", "inp": "cherche un autre job dès que possible", "expect": "KNOWN_GAP"}
+{"name": "gap-tp-phrase-start", "kind": "memory_hygiene", "inp": "cherche un autre job dès que possible", "expect": "blocked"}
 {"name": "p-darkmode", "kind": "memory_hygiene", "inp": "remember I prefer dark mode", "expect": "pass"}
 {"name": "p-french-pref", "kind": "memory_hygiene", "inp": "je préfère les réponses en français", "expect": "pass"}
 {"name": "p-timezone", "kind": "memory_hygiene", "inp": "remember my timezone is CET", "expect": "pass"}

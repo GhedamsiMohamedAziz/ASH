@@ -37,18 +37,35 @@ class InMemoryTaint:
     def taint(self, task_id: str) -> None:
         self._t.add(task_id)  # monotonic: never clears (§17.6.3)
 
-# Secret shapes (mirror the gateway DLP, §13.5). A hit blocks the memory write.
+# Secret shapes (mirror the gateway DLP, §13.5 — same shape set as dlp.ts). A hit
+# blocks the memory write. Kept aligned to the gateway list; the gateway is not edited.
 _SECRET = re.compile(
-    r"(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]{10,}|"
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(password|secret|api[_-]?key)\s*[:=]\s*\S+)",
+    r"(AKIA[0-9A-Z]{16}"
+    r"|gh[posur]_[A-Za-z0-9]{36,}"                      # ghp_/gho_/ghs_/ghu_/ghr_
+    r"|github_pat_[A-Za-z0-9_]{22,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"                    # Slack
+    r"|sk-ant-[A-Za-z0-9_-]{20,}"                       # Anthropic
+    r"|sk-[A-Za-z0-9]{20,}"                             # OpenAI
+    r"|glpat-[A-Za-z0-9_-]{20,}"                        # GitLab PAT
+    r"|AIza[0-9A-Za-z_-]{35,}"                          # Google API key
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"  # JWT (3-segment)
+    r"|[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@"        # user:pass@host URL creds
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"|\b(password|secret|api[_-]?key)\s*[:=]\s*\S+)",
     re.IGNORECASE)
 
-# Third-party-fact heuristic (§9.1.3): a statement about a *named other person*'s
-# private situation (job hunting, health, salary...) learned from read content.
+# Third-party-fact heuristic (§9.1.3): a statement about *another person*'s private
+# situation (job hunting, health, salary, layoff, bonus...) learned from read content.
+# The signal is the sensitive predicate itself — not "a capitalized leading word",
+# which under re.IGNORECASE degenerated to ANY word and over-blocked self-referential
+# memories. A name is neither necessary ("cherche un autre job dès que possible") nor
+# sufficient ("Marie is a great colleague" must pass): only the predicate triggers.
 _THIRD_PARTY = re.compile(
-    r"\b([A-Z][a-z]+)\b.{0,40}\b(cherche un autre job|looking for another job|"
-    r"is quitting|va démissionner|is sick|est malade|salaire|salary|"
-    r"cherche un nouveau|wants to leave|va partir)\b", re.IGNORECASE)
+    r"(cherche un autre job|cherche un nouveau|looking for another job|wants to leave|"
+    r"is quitting|is sick|va démissionner|va partir|est malade|"
+    r"salaire|salary|touche une prime|"
+    r"burnout|dépression|depression|être licencié|licenciement)",
+    re.IGNORECASE)
 
 
 class MemoryGuardBlocked(Exception):

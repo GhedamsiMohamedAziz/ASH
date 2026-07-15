@@ -63,10 +63,48 @@ def test_third_party_private_fact_blocked():
         check_write("Sarah is looking for another job")
 
 
+@pytest.mark.parametrize("secret", [
+    "remember gho_" + "a" * 36,                                   # GitHub OAuth token
+    "anthropic key sk-ant-api03-" + "a" * 40,                     # Anthropic
+    "openai key sk-" + "a" * 48,                                  # OpenAI
+    "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.dozjgNryP4J3", # JWT (3-segment)
+    "gitlab token glpat-abcdefghij1234567890",                    # GitLab PAT
+    "google api key AIzaSyD-1234567890abcdefghijklmnopqrstuv",    # Google API key
+    "connect to https://admin:hunter2@internal.example.com/db",   # user:pass@host URL creds
+])
+def test_new_secret_shapes_blocked(secret):
+    with pytest.raises(MemoryGuardBlocked):
+        check_write(secret)
+
+
+@pytest.mark.parametrize("tp", [
+    "Éric cherche un autre job",              # accented name
+    "Léa va partir en fin d'année",
+    "mon collègue cherche un autre job",      # leading word is not a proper noun
+    "cherche un autre job dès que possible",  # no subject at all — predicate stands alone
+    "Y est en burnout",
+    "Z va être licencié",
+    "Karim est en dépression",
+    "Sophie touche une prime de 10k",
+])
+def test_extended_third_party_predicates_blocked(tp):
+    with pytest.raises(MemoryGuardBlocked):
+        check_write(tp)
+
+
 def test_ordinary_facts_pass_the_guard():
     # A normal team fact is fine — only secrets + third-party-private are blocked.
     check_write("the team uses Slack for standups")
     check_write("deployment is gated on green CI")
+
+
+def test_name_without_sensitive_predicate_passes():
+    # The IGNORECASE fix: a proper noun alone no longer fires — only the private
+    # predicate does. Legitimate self-referential / benign memories must pass.
+    check_write("Marie is a great colleague")
+    check_write("Tom presented the roadmap today")
+    check_write("our api key rotation policy is quarterly")
+    check_write("I keep my token in a password manager")
 
 
 # ---------------------------------------------------------------- source_trust (§9.1.4, invariant #9)

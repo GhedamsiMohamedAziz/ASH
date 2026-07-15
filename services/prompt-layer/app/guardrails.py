@@ -17,18 +17,44 @@ from dataclasses import dataclass, field
 
 # --- 1. injection ---------------------------------------------------------
 _INJECTION = [
-    re.compile(r"ignore\s+(all\s+)?(previous\s+|the above\s+)?instructions", re.I),
+    # EN core. `ignore … instructions` tolerates bounded filler words between the
+    # verb and its object ("ignore your previous instructions", "kindly ignore any
+    # previous instructions") without matching unrelated "ignore the noise …".
+    re.compile(r"ignore\s+(\w+\s+){0,3}instructions", re.I),
     re.compile(r"disregard (your|the) (system )?prompt", re.I),
     re.compile(r"reveal (your|the) (system )?(prompt|instructions)", re.I),
     re.compile(r"you are now (a|an|in) ", re.I),
+    # Bare persona/jailbreak ("you are now DAN/root", not "you are now on the waitlist").
+    re.compile(r"you are now\b.{0,20}\b(dan|root|jailbroken|jailbreak|unrestricted|god\s*mode|no restrictions?|do anything now|developer mode)\b", re.I),
+    re.compile(r"\bact as\b.{0,20}\b(an? )?(unrestricted|jailbroken|dan|uncensored|evil) ", re.I),
+    re.compile(r"from now on\b.{0,40}\b(no (restrictions?|rules?|limits?|filters?)|unrestricted|you have no restrictions?)\b", re.I),
+    re.compile(r"\bpretend\b.{0,30}\b(jailbroken|unrestricted|dan|uncensored|no restrictions?)\b", re.I),
     re.compile(r"(exfiltrate|leak) (the |all )?(secret|token|credential|data)", re.I),
     re.compile(r"print (your|the) (system )?(prompt|instructions|config)", re.I),
     re.compile(r"bypass (the )?(guardrails|permissions|policy)", re.I),
     re.compile(r"(new|updated) (system )?instructions?\s*[:：]", re.I),
+    # FR variants (the corpus is bilingual, §20.2). `ignore … instructions` above
+    # already covers "ignore (toutes) les instructions précédentes" (EN verb spelling).
+    re.compile(r"oublie[rz]?\s+(\w+\s+){0,3}instructions", re.I),
+    re.compile(r"(révèle|montre|affiche|dévoile|donne)(-?(moi|nous))?\s+(ton|le|la|votre|vos|tes|mes|ce)\s+.{0,20}(prompt|instructions?|syst[eè]me)", re.I),
+    re.compile(r"tu es maintenant\s+.{0,40}(sans (restrictions?|limites?|r[eè]gles?|garde-fous?)|non restreint|jailbreak\w*|débridé)", re.I),
+    re.compile(r"(contourne|désactive|neutralise)[rz]?\s+(les?\s+|la\s+|des\s+)?(garde[- ]?fous?|s[eé]curit[eé]s?|restrictions?|protections?)", re.I),
+    re.compile(r"(exfiltre|vole|divulgue|envoie|fuite)[rz]?\s+.{0,30}(token|secret|credential|clé|mot de passe|identifiant)", re.I),
 ]
 # Attachment heuristic: instructions embedded in a "document" that address the model.
 _ATTACH_INJECTION = re.compile(
     r"(assistant\s*[:：]|<system>|\[system\]|as an ai|when you read this,? (ignore|do))", re.I)
+
+# Light normalization for common obfuscation (§9.3): collapse letter-spacing and
+# map leetspeak so `i g n o r e …` / `1gn0re all previous 1nstruct10ns` hit the same
+# patterns. Arbitrary base64 / novel encodings are NOT deterministically decidable
+# — those stay uncaught (tracked as KNOWN_GAP in the corpus), we do not decode the world.
+_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
+_SPACED = re.compile(r"(?<=\b\w)\s(?=\w\b)")
+
+
+def _normalize(text: str) -> str:
+    return _SPACED.sub("", text).translate(_LEET)
 
 # --- 2. PII ---------------------------------------------------------------
 _PII = {
@@ -62,8 +88,9 @@ def check_input(text: str, *, attachments_text: str = "", policy: OrgPolicy | No
     """Run the input guardrails; raise GuardrailBlocked on the first violation."""
     policy = policy or OrgPolicy()
 
+    norm = _normalize(text)
     for rx in _INJECTION:
-        if rx.search(text):
+        if rx.search(text) or rx.search(norm):
             raise GuardrailBlocked("prompt_injection")
     if attachments_text and _ATTACH_INJECTION.search(attachments_text):
         raise GuardrailBlocked("attachment_injection")
