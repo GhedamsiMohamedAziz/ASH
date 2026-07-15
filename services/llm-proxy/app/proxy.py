@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from dataclasses import dataclass, field
+from typing import Callable
 
 from .backends import Backend, BackendError, StubBackend, _prompt_text
 from .config import Config
@@ -20,6 +23,36 @@ logger = logging.getLogger("llm_proxy.usage")
 
 # Shared error taxonomy (packages/errors, §21). Hardcoded to avoid a cross-package import.
 E_BUDGET_EXCEEDED = "E_BUDGET_EXCEEDED"
+
+# Deterministic monthly bucket. Callers that want real calendar months inject a clock
+# (Proxy(clock=...)) returning a month key; tests rely on this fixed key so spend accumulates
+# without depending on datetime.now (mirrors prompt-layer's Ledger month keying, §25/§16.1).
+LEDGER_MONTH = "current"
+
+
+def _default_org_cap() -> float | None:
+    """Optional process-wide org monthly cap from LLM_PROXY_ORG_CAP_USD (unset => no cap)."""
+    raw = os.environ.get("LLM_PROXY_ORG_CAP_USD")
+    if raw is None or raw.strip() == "":
+        return None
+    return float(raw)
+
+
+@dataclass
+class Ledger:
+    """Per-(org, month) cumulative spend. In-memory here; usage_daily in prod (§16.1).
+
+    A minimal copy of prompt-layer's Ledger (services/prompt-layer/app/budget.py) so the
+    proxy stays self-contained and offline — no cross-package import.
+    """
+
+    _org: dict[tuple[str, str], float] = field(default_factory=dict)
+
+    def org_spent(self, org_id: str, month: str) -> float:
+        return self._org.get((org_id, month), 0.0)
+
+    def record(self, org_id: str, month: str, cost: float) -> None:
+        self._org[(org_id, month)] = self.org_spent(org_id, month) + cost
 
 
 class BudgetExceeded(Exception):
@@ -42,13 +75,38 @@ class Proxy:
     """
 
     def __init__(self, cfg: Config, *, default_backend: Backend | None = None,
-                 backends: dict[str, Backend] | None = None) -> None:
+                 backends: dict[str, Backend] | None = None,
+                 clock: Callable[[], str] | None = None) -> None:
         self.cfg = cfg
         self.default_backend = default_backend or StubBackend()
         self.backends = backends or {}
+        # Process-wide per-org monthly ledger + optional per-org monthly cap. Default cap
+        # comes from LLM_PROXY_ORG_CAP_USD (None => unlimited so live turns never block);
+        # per-org caps set via set_org_cap win over it.
+        self._ledger = Ledger()
+        self._default_org_cap = _default_org_cap()
+        self._org_caps: dict[str, float] = {}
+        self._clock = clock
 
     def _backend(self, model: str) -> Backend:
         return self.backends.get(model, self.default_backend)
+
+    def _month(self) -> str:
+        return self._clock() if self._clock is not None else LEDGER_MONTH
+
+    def set_org_cap(self, org_id: str, usd: float | None) -> None:
+        """Set (or clear, with None) an org's monthly USD cap. Test/admin hook."""
+        if usd is None:
+            self._org_caps.pop(org_id, None)
+        else:
+            self._org_caps[org_id] = usd
+
+    def _org_cap_for(self, org_id: str) -> float | None:
+        return self._org_caps.get(org_id, self._default_org_cap)
+
+    def org_spent(self, org_id: str) -> float:
+        """Cumulative recorded spend for an org this month (observability/tests)."""
+        return self._ledger.org_spent(org_id, self._month())
 
     def complete(self, req: CompleteRequest) -> CompleteResponse:
         route = routing.resolve(self.cfg, tier=req.tier, model=req.model, org_id=req.org_id)
@@ -57,13 +115,25 @@ class Proxy:
         # Use the SAME serialization the backends use for their token count, so the budget
         # estimate can't silently diverge from actual spend if the format ever changes.
         prompt_tokens = token_estimate(_prompt_text(req.messages))
+        est = estimate_cost(self.cfg, route.primary, prompt_tokens, req.max_tokens)
         if req.budget_usd is not None:
-            est = estimate_cost(self.cfg, route.primary, prompt_tokens, req.max_tokens)
             if est > req.budget_usd:
                 self._log(req, route.primary, prompt_tokens, 0, est, rejected=True)
                 raise BudgetExceeded(
                     f"estimated cost ${est:.6f} exceeds budget ${req.budget_usd:.6f}",
                     model=route.primary, cost_usd=est, budget_usd=req.budget_usd,
+                )
+
+        # Per-org monthly cap (§25): reject BEFORE spending if cumulative spend + this call's
+        # estimate would cross the org's ceiling. No cap set => unlimited (live path unaffected).
+        cap = self._org_cap_for(req.org_id) if req.org_id is not None else None
+        if cap is not None:
+            would = self._ledger.org_spent(req.org_id, self._month()) + est
+            if would > cap:
+                self._log(req, route.primary, prompt_tokens, 0, est, rejected=True)
+                raise BudgetExceeded(
+                    f"org monthly spend ${would:.6f} would exceed cap ${cap:.6f}",
+                    model=route.primary, cost_usd=would, budget_usd=cap,
                 )
 
         # Try primary, then the tier fallback on any backend error (§9.5 auto-fallback).
@@ -96,6 +166,10 @@ class Proxy:
                 f"actual cost ${cost:.6f} exceeds budget ${req.budget_usd:.6f}",
                 model=used_model, cost_usd=cost, budget_usd=req.budget_usd,
             )
+
+        # Success: record actual spend to the per-org monthly ledger (billing/enforcement, §25).
+        if req.org_id is not None:
+            self._ledger.record(req.org_id, self._month(), cost)
 
         fell_back = used_model != route.primary
         self._log(req, used_model, result.tokens_in, result.tokens_out, cost,

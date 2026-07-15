@@ -1,131 +1,168 @@
-// Browser MCP (instructions.md §14): headless Playwright pool — read/click/fill/
-// download/capture. Sandboxed + resource-capped. The notable safety: an egress
-// allow-list (a browse tool must not become an exfiltration/SSRF vector), and
-// downloads land in S3, never back to the agent's sandbox filesystem directly.
+// Browser MCP server (instructions.md §14, platform connector "Browser + Database MCP").
+//
+// Exposes read-only browse tools behind one interface; the MCP Gateway (§13) enforces AuthZ and
+// the per-turn taint/egress rules (§17.6). Every request first clears the anti-SSRF gate
+// (`validateUrl`, src/ssrf.ts) — THE security control — before any socket opens, and every
+// response is capped at 256 KB (§14). The actual page fetch is behind a seam: a `StubFetch`
+// default keeps the whole chain offline + deterministic (no browser binary, no network); a real
+// fetch backend drops in behind `BrowserBackend` with no change to the tool surface — and it is
+// still gated by the same validator, so the seam can never become the SSRF bypass.
 
-export interface Ctx { credential: string }
+import {
+  validateUrl,
+  type AllowListResolver,
+  type ValidatedTarget,
+} from "./ssrf.ts";
 
-// SSRF guard (§17.4 zero-trust). A literal-string blocklist is bypassable via alternate IP
-// encodings (decimal 2130706433, hex 0x7f000001, octal, short forms) and IPv6, so we PARSE the
-// host: any IPv4 encoding is canonicalized to an integer and checked against the private/loopback
-// CIDRs; IPv6 loopback/ULA/link-local/mapped are matched by prefix; metadata hostnames are named.
-// (DNS-rebinding — a public name resolving to a private IP — is closed at fetch time in the real
-// backend by re-checking the RESOLVED address; this function guards the literal host.)
-
-// Private / loopback / link-local IPv4 ranges as [lo, hi] integer bounds.
-const V4_BLOCKED: Array<[number, number]> = [
-  [0x00000000, 0x00ffffff], // 0.0.0.0/8    "this host"
-  [0x0a000000, 0x0affffff], // 10.0.0.0/8
-  [0x64400000, 0x647fffff], // 100.64.0.0/10 CGNAT
-  [0x7f000000, 0x7fffffff], // 127.0.0.0/8  loopback
-  [0xa9fe0000, 0xa9feffff], // 169.254.0.0/16 link-local (cloud metadata)
-  [0xac100000, 0xac1fffff], // 172.16.0.0/12
-  [0xc0a80000, 0xc0a8ffff], // 192.168.0.0/16
-];
-
-// Parse an IPv4 in any inet_aton encoding (dotted/decimal/hex/octal, 1-4 parts) → uint32, or null.
-export function parseIpv4(host: string): number | null {
-  const parts = host.split(".");
-  if (parts.length === 0 || parts.length > 4) return null;
-  const nums: number[] = [];
-  for (const p of parts) {
-    if (p === "") return null;
-    let n: number;
-    if (/^0x[0-9a-f]+$/i.test(p)) n = parseInt(p, 16);
-    else if (/^0[0-7]+$/.test(p)) n = parseInt(p, 8);
-    else if (/^[0-9]+$/.test(p)) n = parseInt(p, 10);
-    else return null;
-    if (!Number.isFinite(n) || n < 0) return null;
-    nums.push(n);
-  }
-  // Leading parts are one byte each; the final part fills the remaining bytes (inet_aton).
-  let ip = 0;
-  for (let i = 0; i < nums.length - 1; i++) {
-    if (nums[i] > 255) return null;
-    ip = ip * 256 + nums[i];
-  }
-  const restBytes = 4 - (nums.length - 1);
-  const rest = nums[nums.length - 1];
-  if (rest >= 256 ** restBytes) return null;
-  ip = ip * 256 ** restBytes + rest;
-  return ip >= 0 && ip <= 0xffffffff ? ip : null;
+export interface ToolContext {
+  userId: string;
+  orgId: string;
+  credential: string; // injected by the gateway from Vault (§13.2)
 }
 
-function isBlockedHost(rawHost: string): boolean {
-  const host = rawHost.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
-
-  // Named internal targets.
-  if (host === "localhost" || host === "metadata" || host.endsWith(".internal") ||
-      host.endsWith(".local")) return true;
-
-  // IPv6 loopback / unspecified / ULA (fc00::/7) / link-local (fe80::/10).
-  if (host === "::1" || host === "::" || host.startsWith("fc") || host.startsWith("fd") ||
-      /^fe[89ab]/.test(host)) return true;
-  // IPv4-mapped IPv6 (::ffff:127.0.0.1 or ::ffff:7f00:1) — extract and check the v4 tail.
-  const mapped = host.match(/^::ffff:(.+)$/);
-  if (mapped) {
-    const v4 = parseIpv4(mapped[1]);
-    if (v4 !== null) return V4_BLOCKED.some(([lo, hi]) => v4 >= lo && v4 <= hi);
-    return true; // hex-form mapped address we can't cheaply parse — deny
-  }
-
-  // Any IPv4 encoding.
-  const v4 = parseIpv4(host);
-  if (v4 !== null) return V4_BLOCKED.some(([lo, hi]) => v4 >= lo && v4 <= hi);
-  return false;
-}
-
-export function urlAllowed(u: string, allow: Set<string> | null = null): { ok: boolean; reason?: string } {
-  let host: string;
-  try {
-    const parsed = new URL(u);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return { ok: false, reason: "only http(s) allowed" };
-    }
-    host = parsed.hostname;
-  } catch {
-    return { ok: false, reason: "invalid url" };
-  }
-  if (isBlockedHost(host)) return { ok: false, reason: "internal host blocked (SSRF)" };
-  if (allow && !allow.has(host)) return { ok: false, reason: `host ${host} not on allow-list` };
-  return { ok: true };
+// Raw response from the fetch seam — the backend does the socket work, nothing more.
+export interface RawResponse {
+  status: number;
+  contentType: string;
+  body: string;
 }
 
 export interface BrowserBackend {
-  read(url: string, ctx: Ctx): Promise<{ title: string; text: string }>;
-  extract(url: string, selector: string, ctx: Ctx): Promise<string[]>;
-  capture(url: string, ctx: Ctx): Promise<{ s3_key: string }>;
+  // `target` has already cleared the SSRF gate; the backend fetches exactly `target.url` and must
+  // not re-derive a URL from untrusted input (that would route around the validator).
+  fetch(target: ValidatedTarget, ctx: ToolContext): Promise<RawResponse>;
 }
 
-export class StubBrowser implements BrowserBackend {
-  async read(url: string) {
-    return { title: "Example", text: `content of ${url}` };
+// §14: responses are truncated to 256 KB.
+export const MAX_BYTES = 256 * 1024;
+
+// Deterministic offline backend — same input yields the same output, no network, no browser
+// binary. Stands in for the real headless-browser fetch on the dev/test path.
+export class StubFetch implements BrowserBackend {
+  async fetch(target: ValidatedTarget): Promise<RawResponse> {
+    const u = target.url;
+    // A deterministic oversized page for exercising the 256 KB cap.
+    if (u.pathname.includes("big")) {
+      return { status: 200, contentType: "text/plain; charset=utf-8", body: "A".repeat(300 * 1024) };
+    }
+    return {
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body:
+        `<html><head><title>Stub page for ${u.host}</title></head>` +
+        `<body><h1>Hello from ${u.host}</h1><p>path: ${u.pathname}</p></body></html>`,
+    };
   }
-  async extract(url: string, selector: string) {
-    return [`match-1 for ${selector}`, "match-2"];
-  }
-  async capture(url: string) {
-    return { s3_key: "captures/shot.png" }; // downloads/captures go to S3 (§14)
-  }
+}
+
+export interface BrowserMcpOptions {
+  backend?: BrowserBackend;
+  allowList?: AllowListResolver; // per-org domain allow-list; default deny (empty)
+  resolve?: (host: string) => Promise<string[]>; // prod DNS-rebinding re-check seam
 }
 
 export class BrowserMcp {
-  private b: BrowserBackend;
-  private allow: Set<string> | null;
-  constructor(backend: BrowserBackend = new StubBrowser(), allow: Set<string> | null = null) {
-    this.b = backend;
-    this.allow = allow;
+  private backend: BrowserBackend;
+  private allowList: AllowListResolver;
+  private resolve?: (host: string) => Promise<string[]>;
+
+  constructor(opts: BrowserMcpOptions = {}) {
+    this.backend = opts.backend ?? new StubFetch();
+    this.allowList = opts.allowList ?? (() => []); // default deny
+    this.resolve = opts.resolve;
   }
-  private guard(url: string) {
-    const g = urlAllowed(url, this.allow);
-    return g.ok ? null : { error: { code: "E_PERM_TOOL_DENIED", message: g.reason } };
-  }
-  tools(): Record<string, (a: any, ctx: Ctx) => Promise<unknown>> {
+
+  // The MCP tool surface: read-only browse tools, each gated by the SSRF validator and capped.
+  // Names match the §13 tool_policies / TASK JWT allow pattern "browser.read_*" (read_page) and
+  // the raw-source companion "browser.fetch".
+  tools(): Record<string, (args: any, ctx: ToolContext) => Promise<unknown>> {
     return {
-      "browser.read": async (a, ctx) => this.guard(a.url) ?? this.b.read(String(a.url), ctx),
-      "browser.extract": async (a, ctx) =>
-        this.guard(a.url) ?? this.b.extract(String(a.url), String(a.selector), ctx),
-      "browser.capture": async (a, ctx) => this.guard(a.url) ?? this.b.capture(String(a.url), ctx),
+      // Extracted, readable text + title — the primary agent-facing tool.
+      "browser.read_page": (a, ctx) => this.readPage(String(a.url ?? ""), ctx),
+      // Raw (capped) body — for when the agent needs the source, not the extraction.
+      "browser.fetch": (a, ctx) => this.fetchRaw(String(a.url ?? ""), ctx),
     };
   }
+
+  // JSON Schema for the two tools (strict input; the gateway validates against these).
+  schemas(): Record<string, unknown> {
+    const urlProp = {
+      type: "object",
+      additionalProperties: false,
+      required: ["url"],
+      properties: {
+        url: { type: "string", format: "uri", maxLength: 2048, description: "http(s) URL to browse" },
+      },
+    };
+    return { "browser.read_page": urlProp, "browser.fetch": urlProp };
+  }
+
+  private async gatedFetch(url: string, ctx: ToolContext): Promise<{ target: ValidatedTarget; resp: RawResponse }> {
+    const target = await validateUrl(url, ctx.orgId, { allowList: this.allowList, resolve: this.resolve });
+    const resp = await this.backend.fetch(target, ctx);
+    return { target, resp };
+  }
+
+  private async readPage(url: string, ctx: ToolContext) {
+    const { target, resp } = await this.gatedFetch(url, ctx);
+    const { content, truncated, bytes } = cap(resp.body);
+    return {
+      url: target.url.href,
+      status: resp.status,
+      contentType: resp.contentType,
+      title: extractTitle(content),
+      text: htmlToText(content),
+      truncated,
+      bytes,
+    };
+  }
+
+  private async fetchRaw(url: string, ctx: ToolContext) {
+    const { target, resp } = await this.gatedFetch(url, ctx);
+    const { content, truncated, bytes } = cap(resp.body);
+    return {
+      url: target.url.href,
+      status: resp.status,
+      contentType: resp.contentType,
+      body: content,
+      truncated,
+      bytes,
+    };
+  }
+}
+
+// Truncate a body to MAX_BYTES bytes (UTF-8), reporting whether truncation happened and the
+// original byte length. Enforces the §14 256 KB cap regardless of what the backend returned.
+export function cap(body: string): { content: string; truncated: boolean; bytes: number } {
+  const raw = Buffer.from(body, "utf8");
+  if (raw.length <= MAX_BYTES) return { content: body, truncated: false, bytes: raw.length };
+  return { content: raw.subarray(0, MAX_BYTES).toString("utf8"), truncated: true, bytes: raw.length };
+}
+
+export function extractTitle(html: string): string {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return m ? decodeEntities(m[1]).trim() : "";
+}
+
+// Minimal, deterministic HTML -> text (no external dependency): drop script/style, strip tags,
+// decode a few entities, collapse whitespace. Enough for read_page extraction on the offline path.
+export function htmlToText(html: string): string {
+  return decodeEntities(
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " "),
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
 }

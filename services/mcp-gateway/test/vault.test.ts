@@ -6,6 +6,7 @@ import {
   CredentialMissing,
   CredentialResolver,
   InMemoryVault,
+  LocalKmsProvider,
   open,
   seal,
 } from "../src/vault.ts";
@@ -64,6 +65,46 @@ test("Mode B resolves the ORG service credential, not a personal one (§3.1)", (
   assert.throws(() => r.resolve("agent-org@org_1", "github.create_pr"), CredentialMissing);
 });
 
+// ---------------------------------------------------------------- KMS envelope seam (ADR-019)
+test("LocalKms wrap/unwrap round-trips the data key", () => {
+  const kms = new LocalKmsProvider();
+  const dataKey = randomBytes(32);
+  const wrapped = kms.wrap(dataKey);
+  // wrapped blob is not the plaintext data key
+  assert.notEqual(wrapped.ct, dataKey.toString("hex"));
+  assert.deepEqual(kms.unwrap(wrapped), dataKey);
+});
+
+test("wrong KEK fails to unwrap (fail-closed envelope)", () => {
+  const dataKey = randomBytes(32);
+  const wrapped = new LocalKmsProvider().wrap(dataKey);
+  // a KMS with a DIFFERENT KEK cannot unwrap the envelope
+  assert.throws(() => new LocalKmsProvider().unwrap(wrapped));
+});
+
+test("tampered wrapped key fails to unwrap (GCM auth on the envelope)", () => {
+  const kek = randomBytes(32);
+  const wrapped = new LocalKmsProvider(kek).wrap(randomBytes(32));
+  wrapped.tag = wrapped.tag.slice(0, -2) + "00"; // flip the auth tag
+  assert.throws(() => new LocalKmsProvider(kek).unwrap(wrapped));
+});
+
+test("resolver seal/open still round-trips under the KMS seam", () => {
+  const vault = new InMemoryVault();
+  const r = new CredentialResolver(vault, new LocalKmsProvider());
+  r.store("usr_1", "github", "ghp_underkms");
+  assert.equal(r.resolve("usr_1", "github.create_pr"), "ghp_underkms");
+});
+
+test("default LocalKms preserves the at-rest format (data key == vault key)", () => {
+  // A resolver under the default LocalKms seals with the SAME 32-byte vault key, so a value sealed
+  // directly with the vault key still opens through the resolver — proving format compatibility.
+  const vault = new InMemoryVault();
+  vault.putToken("usr_1", "github", seal("ghp_direct", vault.getEncryptionKey()));
+  const r = new CredentialResolver(vault); // default LocalKmsProvider
+  assert.equal(r.resolve("usr_1", "github.search"), "ghp_direct");
+});
+
 // ---------------------------------------------------------------- gateway integration
 function jwt(allowed: string[]) {
   return sign({ sub: "usr_1", org_id: "org_1", iat: 1000, exp: 2000, allowed_tools: allowed, approval_tools: [] }, SECRET);
@@ -78,7 +119,7 @@ test("gateway injects the real decrypted credential into the tool handler", asyn
   gw.register("github.search", async (_a, ctx) => {
     seenCredential = ctx.credential;
     return "ok";
-  });
+  }, { ingestsUntrusted: true, egressClass: "none" });
   const r = await gw.call({ tool: "github.search", args: {}, taskJwt: jwt(["github.search"]) });
   assert.equal(r.status, "ok");
   assert.equal(seenCredential, "ghp_realtoken"); // handler got the decrypted token
@@ -87,7 +128,7 @@ test("gateway injects the real decrypted credential into the tool handler", asyn
 test("gateway returns E_CONN_NEEDS_CONNECTION when no credential stored", async () => {
   const resolver = new CredentialResolver(new InMemoryVault());
   const gw = new McpGateway(SECRET, { now: 1500 }, (u, t) => resolver.resolve(u, t));
-  gw.register("github.search", async () => "ok");
+  gw.register("github.search", async () => "ok", { ingestsUntrusted: true, egressClass: "none" });
   const r = await gw.call({ tool: "github.search", args: {}, taskJwt: jwt(["github.search"]) });
   assert.equal(r.code, "E_CONN_NEEDS_CONNECTION");
 });

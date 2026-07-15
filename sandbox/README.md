@@ -40,11 +40,19 @@ This ticket (AX-015) delivers the **image**. The following hardening measures fr
 ## OpenCode + profiles wiring
 
 - OpenCode runs in **server mode** (`opencode serve`); the Orchestrator talks to it over its local HTTP API on port 4096 and consumes its event stream (§12).
-- OpenCode is configured with the MCP Gateway as its **only** remote MCP server (`https://mcp-gateway.internal:8443/mcp`, `Authorization: Bearer ${TASK_JWT}`) — the agent only ever sees the tools the Gateway filters in for that user/turn.
+- OpenCode is configured with the MCP Gateway as its **only** remote MCP server (`https://mcp-gateway.internal:8443/mcp`, `Authorization: Bearer ${TASK_JWT}`) — the agent only ever sees the tools the Gateway filters in for that user/turn. This wiring lives in [`opencode.json`](#opencode-config-opencodejson), copied into the image at OpenCode's global config path.
 - OpenCode's LLM provider is the internal `llm-proxy` — never a direct frontier API key inside the sandbox.
 - Profiles in `/etc/opencode/profiles/*.json` (`dev`, `data-analyst`, `ops`, `generalist`) select the system prompt/role, default model tier (`frontier` vs `eco`), and which MCP tool groups (`github`, `database`, `browser`, `m365`, `slack`, `notion`) are exposed for a given agent invocation.
 
-### OpenCode binary
+### OpenCode config (`opencode.json`)
+
+[`opencode.json`](opencode.json) is the OpenCode 1.17 global config baked into the image. The Dockerfile copies it to `/home/agent/.config/opencode/opencode.json` — OpenCode's global config path (`$XDG_CONFIG_HOME/opencode/opencode.json`, `~/.config/opencode` for the `agent` user) — owned by `agent`.
+
+- **`provider`** declares `llm-proxy` as the LLM provider (OpenAI-compatible, `@ai-sdk/openai-compatible`) with `baseURL`/`apiKey` resolved from the runtime env (`{env:LLM_PROXY_BASE_URL}`, `{env:LLM_PROXY_API_KEY}`) — never a direct frontier API key inside the sandbox (§9.5). Its models are the logical tiers `eco`/`frontier`, which the runner names when it pushes a turn (`app/runner.py` opencode mode). On the KEYLESS dev/CI path, llm-proxy runs in `stub` mode and serves a deterministic `POST /v1/chat/completions` (no API key) — see `services/llm-proxy/app/openai_compat.py`.
+- **`mcp`** declares a single **remote** server, `mcp-gateway`, at `https://mcp-gateway.internal:8443/mcp`. It is the *sole* remote MCP server; the sandbox reaches no other MCP endpoint. The `TASK_JWT` is presented per turn via `"Authorization": "Bearer {env:TASK_JWT}"` — OpenCode's `{env:VAR}` interpolation, so no secret is on disk; the Orchestrator supplies `TASK_JWT` in the runtime env (§11.2, §13).
+- **`tools`** is the allow-list: the union of every profile's `tools` groups (`github`, `browser`, `database`, `m365`, `slack`, `notion` — from `profiles/*.json`). This is the outer bound of what the image will expose; the Gateway still filters down to the exact tools permitted for each user/turn (§12), so the effective set is always a subset of this list.
+
+
 
 The OpenCode binary is not guaranteed to be fetchable in offline/CI build environments, so the Dockerfile makes the fetch a clearly-parameterized, non-fatal step:
 

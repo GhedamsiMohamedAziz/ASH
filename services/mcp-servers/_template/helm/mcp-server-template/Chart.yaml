@@ -1,0 +1,9 @@
+apiVersion: v2
+name: mcp-server-template
+description: >-
+  Chart skeleton for a connector copied from services/mcp-servers/_template/
+  (instructions.md §14.3 N2 "déploiement ns mcp (Helm), NetworkPolicy"). Rename
+  once the connector is forked out of _template/.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

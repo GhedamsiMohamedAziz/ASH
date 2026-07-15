@@ -95,6 +95,7 @@ class Memory:
     created_at: float
     use_count: int = 0
     expires_at: float | None = None
+    source_trust: str = "trusted"  # trusted|untrusted — a tainted turn writes only untrusted (§9.1.4)
 
 
 @dataclass
@@ -111,15 +112,24 @@ class MemoryStore:
     _items: list[Memory] = field(default_factory=list)
     _seq: int = 0
 
-    def save(self, content: str, kind: str, now: float, expires_at: float | None = None) -> Memory | None:
-        """Save a fact; returns None if a near-duplicate already exists (§9.1 dedup)."""
+    def save(self, content: str, kind: str, now: float, expires_at: float | None = None,
+             source_trust: str = "trusted") -> Memory | None:
+        """Save a fact; returns None if a near-duplicate already exists (§9.1 dedup).
+
+        source_trust stamps whether the writing turn was contaminated (§9.1.4). A tainted turn
+        only ever produces 'untrusted' rows — never silently promoted to 'trusted'.
+        """
         emb = embed(content)
         for m in self._items:
             if cosine(emb, m.embedding) > self.dedup_threshold:
                 m.use_count += 1  # reinforce the existing one instead
+                # A trusted turn confirming an untrusted memory promotes it; the reverse never.
+                if source_trust == "trusted":
+                    m.source_trust = "trusted"
                 return None
         self._seq += 1
-        mem = Memory(f"mem_{self._seq:06d}", content, kind, emb, now, expires_at=expires_at)
+        mem = Memory(f"mem_{self._seq:06d}", content, kind, emb, now,
+                     expires_at=expires_at, source_trust=source_trust)
         self._items.append(mem)
         return mem
 

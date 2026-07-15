@@ -31,12 +31,12 @@ func TestHealthcheckFailsAfterThree(t *testing.T) {
 	_ = sb.To(Active)
 	sb.Healthcheck(false)
 	sb.Healthcheck(false)
-	if sb.State() == Error {
-		t.Fatal("should not error before 3 failures")
+	if sb.State() == Failed {
+		t.Fatal("should not fail before 3 failures")
 	}
 	sb.Healthcheck(false)
-	if sb.State() != Error {
-		t.Fatalf("want ERROR after 3 failures, got %s", sb.State())
+	if sb.State() != Failed {
+		t.Fatalf("want FAILED after 3 failures, got %s", sb.State())
 	}
 }
 

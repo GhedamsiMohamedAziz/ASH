@@ -1,0 +1,10 @@
+# Per-env values, mirroring infra/helm/axone/values.yaml's shape (§22.1). A connector forked from
+# _template/ copies this file and tunes replicas/resources/env for its own load profile.
+global: { imageTag: "0.1.0", env: "staging" }
+connector:
+  name: mcp-server-template # TODO(connector): rename
+  replicas: 2
+  port: 8090
+  resources: { requests: { cpu: "100m", memory: "128Mi" } }
+  env:
+    OLMA_TEMPLATE_LIVE: "0" # TODO(connector): the real connector's "use RestBackend" flag/base URL

@@ -16,14 +16,13 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from olma_shared import jwt
-
 from .classify import TASK_AGENTIQUE, classify
 from .policy import Policy, PolicyEngine
+from .task_jwt import TASK_JWT_SECRET, mint as _mint_task_jwt
 
-# Dev signing secret for the internal TASK JWT. Prod uses the auth-service RS256
-# key + JWKS (§13.4); the wire format is the same claims set.
-TASK_JWT_SECRET = "dev-task-jwt-secret"
+# TASK_JWT_SECRET (the HS256 dev default secret) now lives in `task_jwt` alongside the
+# config-gated ES256 seam (§13.4, ADR-012); re-exported here so existing importers keep
+# working. HS256 stays the default — ES256 is opt-in via TASK_JWT_ALG=ES256.
 TASK_JWT_ISS = "olma-prompt-layer"
 TASK_JWT_AUD = "olma-mcp-gateway"
 TASK_JWT_TTL = 900  # 15 min (§13.4)
@@ -101,17 +100,21 @@ def _route(cls: str, recurrence: bool) -> tuple[str, str]:
 
 
 def _sign_task_jwt(user_id: str, org_id: str, allowed: list[str], approval: list[str],
-                   on_behalf_of: str | None, now: float | None = None) -> str:
+                   on_behalf_of: str | None, now: float | None = None,
+                   task_id: str | None = None, origin: str = "interactive") -> str:
     iat = int(now if now is not None else time.time())
     claims = {
         "sub": user_id, "org_id": org_id, "iss": TASK_JWT_ISS, "aud": TASK_JWT_AUD,
         "iat": iat, "exp": iat + TASK_JWT_TTL,
         "allowed_tools": allowed, "approval_tools": approval,
+        # Carried so the Gateway can key taint per task and decide egress on a tainted turn
+        # (§17.6.3): interactive → require_approval, scheduled → E_GUARD_TAINTED_EGRESS.
+        "task_id": task_id, "origin": origin,
     }
     if on_behalf_of:
         claims["sub"] = f"agent-org@{org_id}"
         claims["on_behalf_of"] = on_behalf_of
-    return jwt.sign(claims, TASK_JWT_SECRET)
+    return _mint_task_jwt(claims)
 
 
 def reapprove_task_jwt(user_id: str, org_id: str, tool: str,
@@ -131,7 +134,8 @@ def reapprove_task_jwt(user_id: str, org_id: str, tool: str,
 
 
 def build_task(inbound: dict, *, role: str = "member", task_id: str | None = None,
-               now: float | None = None, engine: PolicyEngine | None = None) -> AgentTask:
+               now: float | None = None, engine: PolicyEngine | None = None,
+               taint=None) -> AgentTask:
     """Run the pipeline on an InboundMessage dict → AgentTask (raises GuardrailBlocked).
 
     `engine` is the tool_policies evaluator; defaults to the seeded default engine.
@@ -162,10 +166,18 @@ def build_task(inbound: dict, *, role: str = "member", task_id: str | None = Non
         candidate_tools = filter_team_tools(_DEFAULT_TOOLS)
     allowed, approval, _groups = eng.compute_tools(inbound["org_id"], role, candidate_tools)  # stage 4
     tier, profile = _route(c.cls, c.recurrence)  # stage 5 routing
-    origin = "scheduled" if inbound.get("channel") == "scheduler" else "interactive"
+    # webhook + scheduler are both non-interactive: no human in the loop, so require_approval
+    # tools fail closed at run time (§15.8 / §9 intro). Only the interactive web/chat path can approve.
+    origin = "scheduled" if inbound.get("channel") in ("scheduler", "webhook") else "interactive"
     tid = task_id or inbound.get("task_id") or f"task_{inbound.get('message_id', '0')}"
+    # §17.6.3 + §15.8: a webhook payload is UNTRUSTED input, so the turn starts tainted — the Gateway
+    # then reclasses any egress_class=public tool (scheduled + tainted → E_GUARD_TAINTED_EGRESS, no
+    # human to approve), and any memory written this turn is source_trust=untrusted (§9.1.4). The taint
+    # is set on the SAME task_id carried in the TASK JWT, via the shared ledger (Redis in prod).
+    if taint is not None and (inbound.get("channel") == "webhook" or inbound.get("untrusted")):
+        taint.taint(tid)
     jwt_str = _sign_task_jwt(inbound["user_id"], inbound["org_id"], allowed, approval,
-                             on_behalf_of, now=now)
+                             on_behalf_of, now=now, task_id=tid, origin=origin)
 
     plan = []
     if c.cls == TASK_AGENTIQUE:

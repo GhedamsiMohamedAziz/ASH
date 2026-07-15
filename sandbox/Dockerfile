@@ -38,8 +38,17 @@ COPY profiles/ /etc/opencode/profiles/
 
 # --- non-root user + workspace ---
 RUN useradd -m -u 1000 -s /bin/bash agent \
-    && mkdir -p /workspace \
-    && chown -R agent:agent /workspace /etc/opencode
+    && mkdir -p /workspace /home/agent/.config/opencode \
+    && chown -R agent:agent /workspace /etc/opencode /home/agent/.config
+
+# --- OpenCode config (§12): MCP Gateway as the SOLE remote MCP server ---
+# opencode loads its global config from $XDG_CONFIG_HOME/opencode (= ~/.config/opencode
+# for the agent user; verified against opencode 1.17's config loader). This file wires
+# the MCP Gateway (https://mcp-gateway.internal:8443/mcp, Authorization: Bearer ${TASK_JWT})
+# as the only remote MCP server and carries the profile tool-group allow-list — see
+# README.md "OpenCode + profiles wiring". No secret is baked in: TASK_JWT is resolved at
+# runtime from the env the Orchestrator injects ({env:TASK_JWT}).
+COPY --chown=agent:agent opencode.json /home/agent/.config/opencode/opencode.json
 
 USER agent
 WORKDIR /workspace

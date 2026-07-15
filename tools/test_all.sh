@@ -33,24 +33,16 @@ run "i18n" python3 -m pytest -p no:cacheprovider -q packages/schemas/test_i18n.p
 run "eval-gate" python3 evals/runner.py
 
 echo "── TypeScript (node --test) ──"
-for f in packages/shared-ts/test/shared.test.ts \
-         services/mcp-gateway/test/gateway.test.ts \
-         services/mcp-gateway/test/vault.test.ts \
-         services/mcp-servers/github/test/github.test.ts \
-         services/mcp-servers/github/test/rest.test.ts \
-         services/mcp-servers/scheduler/test/scheduler.test.ts \
-         services/mcp-servers/database/test/database.test.ts \
-         services/mcp-servers/m365/test/m365.test.ts \
-         services/mcp-servers/browser/test/browser.test.ts \
-         services/mcp-servers/notion/test/notion.test.ts \
-         services/mcp-servers/slack/test/slack.test.ts \
-         apps/slack-adapter/test/adapter.test.ts \
-         apps/teams-adapter/test/teams.test.ts \
-         apps/slack-adapter/test/proactive.test.ts \
-         apps/web/test/events.test.ts \
-         apps/web/test/pages.test.ts \
-         services/automation-service/test/jobs.test.ts \
-         services/automation-service/test/delivery.test.ts; do
+# Discover every *.test.ts under the known test roots (no hardcoded list — new
+# connectors/gateway suites are gated automatically). tests/integration/* is
+# intentionally excluded: those are env-gated (RUN_OPENCODE_IT / RUN_GATEWAY_IT /
+# a live Redis) and run separately, not in the default CI mirror.
+for f in $(find packages/shared-ts/test \
+                services/mcp-gateway/test \
+                services/mcp-servers/*/test \
+                apps/slack-adapter/test apps/teams-adapter/test apps/web/test \
+                services/automation-service/test \
+                -name '*.test.ts' 2>/dev/null | sort); do
   run "$f" node --test "$f"
 done
 

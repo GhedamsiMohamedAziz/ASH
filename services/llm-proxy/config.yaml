@@ -6,7 +6,7 @@
 # network); production sets `provider: litellm` (or `anthropic`) and swaps StubBackend for
 # the real client behind the identical Backend interface.
 
-provider: stub          # stub | litellm | anthropic | bedrock | foundry  (swap here, not in code)
+provider: stub          # stub | litellm | anthropic | bedrock | foundry  (or LLM_PROXY_PROVIDER env)
 
 # Logical tier -> concrete model, with an automatic fallback model per tier (§9.5).
 # Defaults follow Annexe H / the current Anthropic lineup.

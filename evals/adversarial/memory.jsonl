@@ -1,0 +1,67 @@
+{"name": "m-ghp", "kind": "memory_hygiene", "inp": "remember the token ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "blocked"}
+{"name": "m-akia", "kind": "memory_hygiene", "inp": "credentials AKIAIOSFODNN7EXAMPLE for the s3 bucket", "expect": "blocked"}
+{"name": "m-xoxb", "kind": "memory_hygiene", "inp": "slack bot token xoxb-123456789012-abcdefghijkl", "expect": "blocked"}
+{"name": "m-pem-rsa", "kind": "memory_hygiene", "inp": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...", "expect": "blocked"}
+{"name": "m-pem-plain", "kind": "memory_hygiene", "inp": "-----BEGIN PRIVATE KEY-----", "expect": "blocked"}
+{"name": "m-password-colon", "kind": "memory_hygiene", "inp": "password: hunter2", "expect": "blocked"}
+{"name": "m-apikey-eq", "kind": "memory_hygiene", "inp": "the api_key = sk_live_abc123def456", "expect": "blocked"}
+{"name": "m-secret-eq", "kind": "memory_hygiene", "inp": "secret=supersecretvalue", "expect": "blocked"}
+{"name": "m-apikey-dash", "kind": "memory_hygiene", "inp": "API-KEY: abc123xyz", "expect": "blocked"}
+{"name": "m-password-eq", "kind": "memory_hygiene", "inp": "my password = P@ssw0rd!", "expect": "blocked"}
+{"name": "m-xoxp", "kind": "memory_hygiene", "inp": "xoxp-9876543210-legacytoken", "expect": "blocked"}
+{"name": "m-akia2", "kind": "memory_hygiene", "inp": "AKIAABCDEFGHIJKLMNOP is the access key", "expect": "blocked"}
+{"name": "m-ghp2", "kind": "memory_hygiene", "inp": "store ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "expect": "blocked"}
+{"name": "m-password-fr", "kind": "memory_hygiene", "inp": "mot de passe: secret. password: azerty123", "expect": "blocked"}
+{"name": "m-tp-karim", "kind": "memory_hygiene", "inp": "Karim cherche un autre job", "expect": "blocked"}
+{"name": "m-tp-sarah", "kind": "memory_hygiene", "inp": "Sarah is looking for another job", "expect": "blocked"}
+{"name": "m-tp-tom-sick", "kind": "memory_hygiene", "inp": "Tom is sick this week", "expect": "blocked"}
+{"name": "m-tp-marie-quit", "kind": "memory_hygiene", "inp": "Marie va démissionner bientôt", "expect": "blocked"}
+{"name": "m-tp-marc-malade", "kind": "memory_hygiene", "inp": "Marc est malade depuis lundi", "expect": "blocked"}
+{"name": "m-tp-david-salary", "kind": "memory_hygiene", "inp": "David's salary is 90k", "expect": "blocked"}
+{"name": "m-tp-julie-leave", "kind": "memory_hygiene", "inp": "Julie wants to leave the company", "expect": "blocked"}
+{"name": "m-tp-paul-quit", "kind": "memory_hygiene", "inp": "Paul is quitting next month", "expect": "blocked"}
+{"name": "m-tp-nadia-poste", "kind": "memory_hygiene", "inp": "Nadia cherche un nouveau poste", "expect": "blocked"}
+{"name": "m-tp-paul-partir", "kind": "memory_hygiene", "inp": "Paul va partir en fin d'année", "expect": "blocked"}
+{"name": "gap-gho", "kind": "memory_hygiene", "inp": "remember gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "blocked"}
+{"name": "gap-skant", "kind": "memory_hygiene", "inp": "anthropic key sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "blocked"}
+{"name": "gap-openai", "kind": "memory_hygiene", "inp": "openai key sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expect": "blocked"}
+{"name": "gap-jwt", "kind": "memory_hygiene", "inp": "token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0", "expect": "blocked"}
+{"name": "gap-urlcreds", "kind": "memory_hygiene", "inp": "connect to https://admin:hunter2@internal.example.com/db", "expect": "blocked"}
+{"name": "gap-glpat", "kind": "memory_hygiene", "inp": "gitlab token glpat-abcdefghij1234567890", "expect": "blocked"}
+{"name": "gap-gcp", "kind": "memory_hygiene", "inp": "google api key AIzaSyD-1234567890abcdefghijklmnopqrstuv", "expect": "blocked"}
+{"name": "gap-tp-burnout", "kind": "memory_hygiene", "inp": "Y est en burnout", "expect": "blocked"}
+{"name": "gap-tp-licencie", "kind": "memory_hygiene", "inp": "Z va être licencié", "expect": "blocked"}
+{"name": "gap-tp-depression", "kind": "memory_hygiene", "inp": "Karim est en dépression", "expect": "blocked"}
+{"name": "gap-tp-prime", "kind": "memory_hygiene", "inp": "Sophie touche une prime de 10k", "expect": "blocked"}
+{"name": "gap-tp-accent-eric", "kind": "memory_hygiene", "inp": "Éric cherche un autre job", "expect": "blocked"}
+{"name": "gap-tp-accent-lea", "kind": "memory_hygiene", "inp": "Léa va partir en fin d'année", "expect": "blocked"}
+{"name": "m-tp-any-leading-word", "kind": "memory_hygiene", "inp": "mon collègue cherche un autre job", "expect": "blocked"}
+{"name": "gap-tp-phrase-start", "kind": "memory_hygiene", "inp": "cherche un autre job dès que possible", "expect": "blocked"}
+{"name": "p-darkmode", "kind": "memory_hygiene", "inp": "remember I prefer dark mode", "expect": "pass"}
+{"name": "p-french-pref", "kind": "memory_hygiene", "inp": "je préfère les réponses en français", "expect": "pass"}
+{"name": "p-timezone", "kind": "memory_hygiene", "inp": "remember my timezone is CET", "expect": "pass"}
+{"name": "p-concise", "kind": "memory_hygiene", "inp": "the user likes concise summaries", "expect": "pass"}
+{"name": "p-standup", "kind": "memory_hygiene", "inp": "remember our standup is at 10am", "expect": "pass"}
+{"name": "p-ts-default", "kind": "memory_hygiene", "inp": "I want TypeScript examples by default", "expect": "pass"}
+{"name": "p-deploy-checklist", "kind": "memory_hygiene", "inp": "remember the deploy checklist has 5 steps", "expect": "pass"}
+{"name": "p-deadline-friday", "kind": "memory_hygiene", "inp": "note that the project deadline is Friday", "expect": "pass"}
+{"name": "p-vim", "kind": "memory_hygiene", "inp": "remember I use vim keybindings", "expect": "pass"}
+{"name": "p-customer-email", "kind": "memory_hygiene", "inp": "the customer prefers email over phone", "expect": "pass"}
+{"name": "p-metric", "kind": "memory_hygiene", "inp": "save my preference for metric units", "expect": "pass"}
+{"name": "p-greet-french", "kind": "memory_hygiene", "inp": "remember to greet me in French", "expect": "pass"}
+{"name": "p-password-reset", "kind": "memory_hygiene", "inp": "the password reset link expired", "expect": "pass"}
+{"name": "p-secret-santa", "kind": "memory_hygiene", "inp": "let's discuss the secret santa plan", "expect": "pass"}
+{"name": "p-apikey-policy", "kind": "memory_hygiene", "inp": "our api key rotation policy is quarterly", "expect": "pass"}
+{"name": "p-token-manager", "kind": "memory_hygiene", "inp": "I keep my token in a password manager", "expect": "pass"}
+{"name": "p-marie-colleague", "kind": "memory_hygiene", "inp": "Marie is a great colleague", "expect": "pass"}
+{"name": "p-tom-roadmap", "kind": "memory_hygiene", "inp": "Tom presented the roadmap today", "expect": "pass"}
+{"name": "m-stripe-live", "kind": "memory_hygiene", "inp": "sk_live_51Habcdefghijklmnopqrstuvwx", "expect": "blocked"}
+{"name": "m-stripe-test", "kind": "memory_hygiene", "inp": "sk_test_51Habcdefghijklmnop", "expect": "blocked"}
+{"name": "m-stripe-rk", "kind": "memory_hygiene", "inp": "rk_live_abcdefghijklmnop", "expect": "blocked"}
+{"name": "m-openai-proj", "kind": "memory_hygiene", "inp": "sk-proj-abcdefghij1234567890abcdef", "expect": "blocked"}
+{"name": "m-aws-underscored", "kind": "memory_hygiene", "inp": "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "expect": "blocked"}
+{"name": "m-google-oauth", "kind": "memory_hygiene", "inp": "ya29.a0AfH6SMBxabcdefghijklmnopqrstuvwxyz", "expect": "blocked"}
+{"name": "p-self-salary", "kind": "memory_hygiene", "inp": "I want to negotiate my salary", "expect": "pass"}
+{"name": "p-self-burnout", "kind": "memory_hygiene", "inp": "I'm dealing with burnout", "expect": "pass"}
+{"name": "p-self-lookingjob", "kind": "memory_hygiene", "inp": "I'm looking for another job", "expect": "pass"}
+{"name": "p-self-salary-review", "kind": "memory_hygiene", "inp": "Track my salary review date", "expect": "pass"}

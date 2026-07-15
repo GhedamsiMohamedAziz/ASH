@@ -105,12 +105,7 @@ func (o *Orchestrator) Submit(t *Task) (*Sandbox, error) {
 // (interactive first), then FIFO within a priority (§10.2).
 func (o *Orchestrator) enqueueLocked(t *Task) {
 	q := append(o.queues[t.OrgID], t)
-	sort.SliceStable(q, func(i, j int) bool {
-		if q[i].Priority != q[j].Priority {
-			return q[i].Priority < q[j].Priority
-		}
-		return q[i].enqueuedAt.Before(q[j].enqueuedAt)
-	})
+	sort.SliceStable(q, func(i, j int) bool { return LessTask(q[i], q[j]) })
 	o.queues[t.OrgID] = q
 }
 
@@ -124,15 +119,33 @@ func (o *Orchestrator) Release(userID string) *Task {
 	}
 	orgID := sb.OrgID
 	delete(o.sandboxes, userID)
-	o.activeByOrg[orgID]--
-	q := o.queues[orgID]
-	if len(q) == 0 {
-		return nil
+
+	var next *Task
+	if q := o.queues[orgID]; len(q) > 0 {
+		next = q[0]
+		o.queues[orgID] = q[1:]
+		o.assignLocked(next.UserID, next.OrgID)
 	}
-	next := q[0]
-	o.queues[orgID] = q[1:]
-	o.assignLocked(next.UserID, next.OrgID)
+
+	// Recompute the org's active count from the authoritative sandbox map rather than
+	// leaning on a paired --/++ around assignLocked: assignLocked returns early WITHOUT
+	// incrementing when the next task's user already holds a sandbox, so a naive
+	// decrement could drift activeByOrg out of step and let a later Submit admit work
+	// past maxPerOrg. Recomputing keeps activeByOrg an exact mirror of live sandboxes.
+	o.recountLocked(orgID)
 	return next
+}
+
+// recountLocked resets activeByOrg[orgID] to the true number of live sandboxes for
+// that org. Must be called with o.mu held after any change to o.sandboxes.
+func (o *Orchestrator) recountLocked(orgID string) {
+	n := 0
+	for _, sb := range o.sandboxes {
+		if sb.OrgID == orgID {
+			n++
+		}
+	}
+	o.activeByOrg[orgID] = n
 }
 
 // StaleScheduled returns queued SCHEDULED tasks waiting > 15min — the caller
@@ -144,7 +157,7 @@ func (o *Orchestrator) StaleScheduled(now time.Time) []*Task {
 	for org, q := range o.queues {
 		kept := q[:0]
 		for _, t := range q {
-			if t.Priority == Scheduled && now.Sub(t.enqueuedAt) > 15*time.Minute {
+			if NeedsReplan(t, now, DefaultReplanWindow) {
 				stale = append(stale, t)
 			} else {
 				kept = append(kept, t)

@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { auditRow, auditSummary, automationRow, groupMemories } from "../src/pages.ts";
+import {
+  auditRow, auditSummary, automationQuota, automationRow, formatTimestamp, groupMemories,
+  humanizeCron, identityTypeLabel,
+} from "../src/pages.ts";
 
 test("memories grouped by kind with labels (§4.4)", () => {
   const g = groupMemories([
@@ -13,17 +16,42 @@ test("memories grouped by kind with labels (§4.4)", () => {
   assert.equal(facts.items.length, 2);
 });
 
-test("active automation row is amber + pausable (§4.5)", () => {
-  const r = automationRow({ id: "j1", name: "Brief matin", humanSchedule: "chaque jour 8h", status: "active", costPerRun: 0.02 });
+test("active automation row is amber + pausable (§2.6, §4.5)", () => {
+  const r = automationRow({
+    id: "j1", name: "Brief matin", cron: "0 8 * * *", timezone: "Europe/Paris",
+    status: "active", monthly_budget_usd: 12.5, next_run_at: "2026-07-16T06:00:00Z",
+  });
   assert.equal(r.color, "amber");
   assert.equal(r.canPause, true);
-  assert.match(r.subtitle, /⟳ chaque jour 8h · active · \$0.0200\/run/);
+  assert.equal(r.scheduleLabel, "chaque jour à 08h00 (Europe/Paris)");
+  assert.equal(r.budgetLabel, "$12.50/mois");
+  assert.equal(r.nextRunLabel, "prochaine exécution 16/07 06:00 UTC");
 });
 
-test("paused automation is muted + not pausable", () => {
-  const r = automationRow({ id: "j2", name: "x", humanSchedule: "y", status: "paused", costPerRun: 0 });
+test("paused automation is muted + not pausable, no budget/next-run when absent", () => {
+  const r = automationRow({ id: "j2", name: "x", cron: "0 9 * * 1", timezone: "UTC", status: "paused" });
   assert.equal(r.color, "muted");
   assert.equal(r.canPause, false);
+  assert.equal(r.statusLabel, "en pause");
+  assert.equal(r.scheduleLabel, "chaque lundi à 09h00 (UTC)");
+  assert.equal(r.budgetLabel, null);
+  assert.equal(r.nextRunLabel, null);
+});
+
+test("humanizeCron falls back to the raw expression for shapes it can't safely explain", () => {
+  assert.equal(humanizeCron("*/15 * * * *"), "*/15 * * * *");
+  assert.equal(humanizeCron("0 9 1 * *"), "0 9 1 * *");
+});
+
+test("formatTimestamp is deterministic UTC, null-safe", () => {
+  assert.equal(formatTimestamp("2026-07-13T09:05:00Z"), "13/07 09:05 UTC");
+  assert.equal(formatTimestamp(null), null);
+  assert.equal(formatTimestamp(undefined), null);
+});
+
+test("automationQuota counts only active jobs against the 20-job cap (§16.1)", () => {
+  assert.equal(automationQuota([{ status: "active" }, { status: "paused" }, { status: "active" }]), "2/20");
+  assert.equal(automationQuota([]), "0/20");
 });
 
 // ---- audit view (§16.1, §4.5 colours) ----
@@ -67,4 +95,22 @@ test("audit summary counts verdicts + redacted calls", () => {
   assert.equal(s.ok, 2);
   assert.equal(s.denied, 1);
   assert.equal(s.redactedCalls, 1);
+});
+
+// ---- connectors identity type (§2.5, §14) ----
+test("identityTypeLabel: user-OAuth connectors", () => {
+  assert.equal(identityTypeLabel("github"), "OAuth utilisateur");
+  assert.equal(identityTypeLabel("slack"), "OAuth utilisateur");
+  assert.equal(identityTypeLabel("notion"), "OAuth utilisateur");
+});
+
+test("identityTypeLabel: delegated + service-account connectors", () => {
+  assert.equal(identityTypeLabel("m365"), "Permissions déléguées");
+  assert.equal(identityTypeLabel("database"), "Compte de service");
+});
+
+test("identityTypeLabel: org-included connectors + unknown fallback", () => {
+  assert.equal(identityTypeLabel("browser"), "Aucune / éphémère");
+  assert.equal(identityTypeLabel("scheduler"), "Service token");
+  assert.equal(identityTypeLabel("some_future_provider"), "Token par projet");
 });

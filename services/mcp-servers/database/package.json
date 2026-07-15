@@ -1,0 +1,8 @@
+{
+  "name": "@olma/mcp-database",
+  "version": "0.1.0",
+  "description": "Axone Database MCP server — read-only Postgres/MySQL access (instructions.md §14)",
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.ts" },
+  "engines": { "node": ">=23" }
+}

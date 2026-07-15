@@ -75,8 +75,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
                 f"canonical is {ref[0]}/{ref[1]} (update config.yaml or reference_prices.py)"
             )
 
+    # LLM_PROXY_PROVIDER overrides the file: the committed default stays `stub` (offline, keyless
+    # tests), and a live deploy sets the env to `anthropic` — the money edge is never committed.
     return Config(
-        provider=raw.get("provider", "stub"),
+        provider=os.environ.get("LLM_PROXY_PROVIDER") or raw.get("provider", "stub"),
         tiers=tiers,
         org_overrides=raw.get("org_overrides") or {},
         prices=prices,
