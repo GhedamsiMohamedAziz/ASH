@@ -14,17 +14,75 @@ export function groupMemories(items: MemoryItem[]): MemoryGroup[] {
   return [...by.entries()].map(([kind, items]) => ({ kind, label: KIND_LABEL[kind] ?? kind, items }));
 }
 
-export interface Automation { id: string; name: string; humanSchedule: string; status: string; costPerRun: number; }
-export interface AutomationRow { id: string; title: string; subtitle: string; canPause: boolean; color: "amber" | "muted"; }
+// ---- Automations view (§2.6 "Mon agent", §4.5) -------------------------------------------
+// GET /api/v1/automations (services/backend-core/app/main.py -> PgStore._JOB_COLUMNS) returns
+// exactly {id, user_id, org_id, name, prompt, cron, timezone, status, monthly_budget_usd,
+// next_run_at, last_run_at, created_at, updated_at} — there is no cost-per-run or created_by
+// column selected, so those are never rendered (ADR-017 spirit: show only real fields). Every
+// scheduled_jobs row IS a cron by construction (the `cron` column is NOT NULL), so every
+// automation legitimately gets the ⟳ amber chip (§4.5 "amber = automations, everything cron") —
+// this isn't a fabricated distinction between "cron-created" and other automations.
+export interface AutomationJob {
+  id: string; name: string; cron: string; timezone: string; status: string;
+  monthly_budget_usd?: number | null; next_run_at?: string | null;
+}
+
+export interface AutomationRow {
+  id: string; title: string; scheduleLabel: string; statusLabel: string;
+  budgetLabel: string | null; nextRunLabel: string | null;
+  canPause: boolean; color: "amber" | "muted";
+}
+
+const DOW_FR = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
+
+// Human-readable cron (§2.6 "horaire (lisible)"). Only the common "at HH:MM every day" and
+// "at HH:MM on a given weekday" shapes get a French phrase; anything more exotic (step values,
+// lists, month restrictions) falls back to the raw cron string — never guess a schedule we can't
+// actually explain.
+export function humanizeCron(cron: string, timezone = "UTC"): string {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return cron;
+  const [min, hour, dom, month, dow] = parts;
+  const isNum = (s: string) => /^\d+$/.test(s);
+  if (!isNum(min) || !isNum(hour)) return cron;
+  const hhmm = `${hour.padStart(2, "0")}h${min.padStart(2, "0")}`;
+  if (dom === "*" && month === "*" && dow === "*") return `chaque jour à ${hhmm} (${timezone})`;
+  if (dom === "*" && month === "*" && /^[0-6]$/.test(dow)) {
+    return `chaque ${DOW_FR[Number(dow)]} à ${hhmm} (${timezone})`;
+  }
+  return cron;
+}
+
+// Real, deterministic (UTC) formatting for next_run_at — avoids locale-dependent Date formatting
+// so it stays testable and consistent across the audit-time helper's style (hms() above).
+export function formatTimestamp(iso?: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} UTC`;
+}
 
 // Format an automation for the list (amber = automations colour, §4.5).
-export function automationRow(a: Automation): AutomationRow {
+export function automationRow(a: AutomationJob): AutomationRow {
+  const budget = a.monthly_budget_usd;
   return {
-    id: a.id, title: a.name,
-    subtitle: `⟳ ${a.humanSchedule} · ${a.status} · $${a.costPerRun.toFixed(4)}/run`,
+    id: a.id,
+    title: a.name,
+    scheduleLabel: humanizeCron(a.cron, a.timezone),
+    statusLabel: a.status === "active" ? "active" : a.status === "paused" ? "en pause" : a.status,
+    budgetLabel: budget != null ? `$${budget.toFixed(2)}/mois` : null,
+    nextRunLabel: a.next_run_at ? `prochaine exécution ${formatTimestamp(a.next_run_at)}` : null,
     canPause: a.status === "active",
     color: a.status === "active" ? "amber" : "muted",
   };
+}
+
+// Active-job quota (§2.6 "quota affiché (n/20)"; cap from instructions.md §16.1 "max 20 jobs
+// actifs/utilisateur"). Counts only active jobs from the real list — paused ones don't consume
+// the quota, and the max is the documented per-user cap, not a fabricated number.
+export function automationQuota(jobs: { status: string }[], max = 20): string {
+  return `${jobs.filter((j) => j.status === "active").length}/${max}`;
 }
 
 // ---- Audit view (§16.1, §4.4) — the governance moat made visible ------------------------

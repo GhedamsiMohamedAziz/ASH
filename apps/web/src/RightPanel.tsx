@@ -4,7 +4,10 @@
 // reuses groupMemories from pages.ts (tested).
 import React, { useEffect, useState } from "react";
 import { AuditPanel } from "./AuditPanel.tsx";
-import { groupMemories, identityTypeLabel, type MemoryItem } from "./pages.ts";
+import {
+  automationQuota, automationRow, groupMemories, identityTypeLabel,
+  type AutomationJob, type MemoryItem,
+} from "./pages.ts";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { authHeaders } from "./auth.ts";
 import {
   Brain, Plug, GitBranch, MessageSquare, FileText, Database, Building2, Link2,
-  Check, XCircle, Loader2,
+  Check, XCircle, Loader2, RotateCw,
 } from "lucide-react";
 
 // ---- Mémoires -------------------------------------------------------------------------------
@@ -197,6 +200,94 @@ function ConnectorsTab() {
   );
 }
 
+// ---- Automatisations (§2.6 "Mon agent") ------------------------------------------------------
+// Reads the REAL GET /api/v1/automations (owner-scoped, backed by scheduled_jobs) with the same
+// fetch+authHeaders pattern as Mémoires/Connecteurs. Pause/resume PATCHes {status}. Tolerant
+// degrade: fetch failure or an unreachable backend just yields the empty state, never a crash or
+// fabricated row (ADR-017 spirit).
+function AutomationsTab() {
+  const [jobs, setJobs] = useState<AutomationJob[] | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = () =>
+    fetch("/api/v1/automations", { headers: authHeaders() })
+      .then((r) => r.json())
+      .then((j) => (j.items as AutomationJob[]) ?? []);
+
+  useEffect(() => {
+    let stop = false;
+    load().then((l) => { if (!stop) setJobs(l); }).catch(() => { if (!stop) setJobs([]); });
+    return () => { stop = true; };
+  }, []);
+
+  // PATCH the toggled status, then apply the backend's own returned row so the UI never shows a
+  // guessed state — on any failure the job is left exactly as it was.
+  const toggle = async (job: AutomationJob) => {
+    if (busyId) return;
+    const nextStatus = job.status === "active" ? "paused" : "active";
+    setBusyId(job.id);
+    try {
+      const res = await fetch(`/api/v1/automations/${job.id}`, {
+        method: "PATCH",
+        headers: authHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      if (res.ok) {
+        const updated = (await res.json()) as AutomationJob;
+        setJobs((prev) => (prev ?? []).map((j) => (j.id === job.id ? updated : j)));
+      }
+    } catch {
+      // backend unreachable — leave the row untouched, matches the tolerant-degrade pattern above
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const list = jobs ?? [];
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="flex flex-col gap-3 p-3">
+        {jobs !== null && list.length > 0 && (
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Automatisations
+            </span>
+            <span className="font-mono text-[11px] text-amber-400">{automationQuota(list)}</span>
+          </div>
+        )}
+        {jobs !== null && list.length === 0 && (
+          <p className="italic text-muted-foreground">Aucune automatisation.</p>
+        )}
+        {list.map((job) => {
+          const row = automationRow(job);
+          return (
+            <div key={row.id} className="flex flex-col gap-1.5 rounded-md border bg-card px-3 py-2">
+              <div className="flex items-center gap-2">
+                <RotateCw className={`size-3.5 shrink-0 ${row.color === "amber" ? "text-amber-400" : "text-muted-foreground"}`} />
+                <span className="text-sm text-card-foreground">{row.title}</span>
+                <div className="ml-auto flex items-center gap-2">
+                  <Badge variant="secondary" className={row.color === "amber" ? "text-amber-400" : "text-muted-foreground"}>
+                    {row.statusLabel}
+                  </Badge>
+                  <Button size="sm" variant="outline" disabled={busyId === job.id} onClick={() => toggle(job)}>
+                    {busyId === job.id ? <Loader2 className="size-3.5 animate-spin" /> : row.canPause ? "Pause" : "Reprendre"}
+                  </Button>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
+                <span>{row.scheduleLabel}</span>
+                {row.budgetLabel && <span>· {row.budgetLabel}</span>}
+                {row.nextRunLabel && <span>· {row.nextRunLabel}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </ScrollArea>
+  );
+}
+
 // ---- Shell ----------------------------------------------------------------------------------
 export function RightPanel({ conversationId, live = true }:
   { conversationId?: string; live?: boolean }) {
@@ -208,6 +299,7 @@ export function RightPanel({ conversationId, live = true }:
             <TabsTrigger value="audit" className="flex-1">Audit</TabsTrigger>
             <TabsTrigger value="memories" className="flex-1"><Brain className="size-3.5" /> Mémoires</TabsTrigger>
             <TabsTrigger value="connectors" className="flex-1"><Plug className="size-3.5" /> Connecteurs</TabsTrigger>
+            <TabsTrigger value="automations" className="flex-1"><RotateCw className="size-3.5" /> Mon agent</TabsTrigger>
           </TabsList>
         </div>
 
@@ -219,6 +311,9 @@ export function RightPanel({ conversationId, live = true }:
         </TabsContent>
         <TabsContent value="connectors" className="min-h-0 flex-1">
           <ConnectorsTab />
+        </TabsContent>
+        <TabsContent value="automations" className="min-h-0 flex-1">
+          <AutomationsTab />
         </TabsContent>
       </Tabs>
     </div>
