@@ -3,7 +3,9 @@
 // personal-vs-platform connector distinction made explicit in the UI). `connection` carries real
 // status when /me returns one (currently only "database"); `alwaysOn` connectors (Browser,
 // Scheduler) have no per-user connect state at all — /me never lists them — so they render a
-// static "inclus" badge instead of a fabricated connected/disconnected pair.
+// static "inclus" badge instead of a fabricated connected/disconnected pair. That badge uses a
+// neutral/outline style (not green) so it's never visually confused with the live "connecté"
+// badge below — "inclus" is a static provisioning fact, not a fetched connection status.
 import { Building2 } from "lucide-react";
 import { identityTypeLabel } from "@/pages";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +35,7 @@ export function OrgConnectorCard({
           <span className="text-xs text-muted-foreground">Géré par votre organisation</span>
         </div>
         {alwaysOn ? (
-          <Badge variant="secondary" className="shrink-0 text-green">
+          <Badge variant="outline" className="shrink-0 border-border text-muted-foreground">
             inclus
           </Badge>
         ) : connection.connected ? (

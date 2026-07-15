@@ -90,3 +90,17 @@ def current_identity(authorization: str | None = Header(default=None)) -> tuple[
         if sub:
             return sub, claims.get("org_id") or DEV_ORG
     return DEV_USER, DEV_ORG
+
+
+def current_role(authorization: str | None = Header(default=None)) -> str:
+    """Resolve the caller's role claim, defaulting to 'member' when absent or unverifiable —
+    mirrors current_identity's tolerant dev/test fallback (never fails closed here; routes that
+    need role-gated access, e.g. /admin, use `_require_admin` instead)."""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+        try:
+            claims = verify_token(token)
+        except Exception:  # noqa: BLE001 — a present-but-invalid token
+            return "member"
+        return str(claims.get("role") or "member")
+    return "member"

@@ -222,6 +222,19 @@ class PgStore:
             )
         return [dict(r) for r in rows]
 
+    # ------------------------------------------------------------- tool policies (§2.6, 0001/0003)
+    async def list_tool_policies(self, org_id: str, role: str) -> list[dict]:
+        """The caller's enforced approval matrix for this org+role, tool_pattern ASC for stable
+        rendering. tool_policies is not one of the 10 RLS-scoped tenant tables (0004), so this
+        filters by org_id explicitly rather than relying on the session GUC."""
+        async with self._pool.acquire() as con:
+            rows = await con.fetch(
+                "SELECT tool_pattern, effect, approver_group FROM tool_policies "
+                "WHERE org_id=$1 AND role=$2 ORDER BY tool_pattern",
+                org_id, role,
+            )
+        return [dict(r) for r in rows]
+
     # sandboxes (0001) has no org_id column (PK is user_id) — scope by joining through users.
     _SANDBOX_COLUMNS = "s.user_id, s.node, s.container_id, s.state, s.volume_id, s.last_active"
 

@@ -51,7 +51,7 @@ from .models import (
     SendMessageAccepted,
 )
 from .approvals import ApprovalManager, ApprovalError, ApprovalStatus
-from .identity import DEV_ORG, DEV_USER, current_identity, verify_token, _auth_error_type
+from .identity import DEV_ORG, DEV_USER, current_identity, current_role, verify_token, _auth_error_type
 from .runner import start_runner
 from .store import Store
 from .webhooks import (
@@ -281,6 +281,21 @@ def whoami(authorization: str | None = Header(default=None)):
     except _auth_error_type():
         return _error(401, "E_AUTH_INVALID_TOKEN", "invalid token")
     return {"user_id": claims["sub"], "org_id": claims.get("org_id")}
+
+
+@api.get("/tool_policies")
+async def tool_policies(
+    identity: tuple[str, str] = Depends(current_identity),
+    role: str = Depends(current_role),
+) -> dict:
+    """The caller's REAL enforced approval matrix (§2.6): the org's tool_policies rows for their
+    org+role (db/migrations/0001_init.sql, seeded by 0003 for org_1). Tolerant-empty without
+    DATABASE_URL, matching the /memories / /automations graceful pattern — never fabricates rows."""
+    _user_id, org_id = identity
+    if store.db is None:
+        return {"items": []}
+    items = await store.db.list_tool_policies(org_id, role)
+    return {"items": items}
 
 
 # --------------------------------------------------------------- automations (PLAN-DEV §3.2)

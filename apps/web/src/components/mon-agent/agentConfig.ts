@@ -10,13 +10,14 @@
 //    selection persisted to localStorage — never sent to the backend, never rendered as if it
 //    came from a server (ADR-017 spirit).
 //
-// 2) Approval policy preview — a read-only reflection of the REAL org tool_policies seed
-//    (db/migrations/0003_seed_policies.sql, role 'member', org_1: github.merge_pr →
-//    require_approval/tech-leads, database.write → deny, scheduler.create_cron →
-//    require_approval). Those three are rendered LOCKED — the org, not the user, controls them,
-//    and there is no endpoint to change that from here. m365.send_mail is NOT in the seed (no
-//    org rule governs it yet), so it is the one entry with a real, local, user-editable
-//    preference — clearly labelled as such, never presented as a synced server value.
+// 2) Approval matrix — GET /api/v1/tool_policies (services/backend-core/app/main.py) now returns
+//    the caller's REAL org+role rows from the `tool_policies` table, so ApprovalPoliciesSection
+//    fetches and renders those directly (per-org, per-role — not a fixed literal here anymore).
+//    LOCAL_APPROVAL_CANDIDATES below is the small, fixed list of tools we offer a genuine LOCAL
+//    (client-only) preference for WHEN the org has no server rule for them — m365.send_mail is
+//    the one example today. If the org ever adds a server rule for one of these, the fetched
+//    matrix takes over and the local-pref row disappears (ApprovalPoliciesSection filters by
+//    tool_pattern already present in the fetched rows) — never presented as org policy.
 
 // ---- Agent profile ---------------------------------------------------------------------------
 
@@ -81,46 +82,19 @@ export function setStoredProfile(id: string): void {
   }
 }
 
-// ---- Approval policy preview -----------------------------------------------------------------
+// ---- Local approval preference candidates --------------------------------------------------
 
-export type PolicyEffect = "require_approval" | "deny";
-
-export interface ApprovalPolicy {
+export interface LocalApprovalCandidate {
   tool: string;
   label: string;
-  effect: PolicyEffect;
-  locked: boolean;          // true = enforced by db/migrations/0003_seed_policies.sql, real & fixed
-  approverGroup?: string;
 }
 
-// The 3 locked rows are the real `member`-role rules from 0003_seed_policies.sql (org_1). Only
-// the unlocked row is a client-side preference toggle (see PREF_KEY below) — nothing here
-// pretends to be a fetched per-user policy.
-export const APPROVAL_POLICIES: ApprovalPolicy[] = [
-  {
-    tool: "github.merge_pr",
-    label: "Fusionner une pull request",
-    effect: "require_approval",
-    locked: true,
-    approverGroup: "tech-leads",
-  },
-  {
-    tool: "scheduler.create_cron",
-    label: "Créer une automatisation planifiée",
-    effect: "require_approval",
-    locked: true,
-  },
-  {
-    tool: "database.write",
-    label: "Écrire dans la base de données",
-    effect: "deny",
-    locked: true,
-  },
+// Tools the UI offers a local preference for WHEN the org's fetched matrix has no rule covering
+// them yet (ApprovalPoliciesSection filters this list against the live /tool_policies response).
+export const LOCAL_APPROVAL_CANDIDATES: LocalApprovalCandidate[] = [
   {
     tool: "m365.send_mail",
     label: "Envoyer un e-mail (Microsoft 365)",
-    effect: "require_approval",
-    locked: false,
   },
 ];
 
