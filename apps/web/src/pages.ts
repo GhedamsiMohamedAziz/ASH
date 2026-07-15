@@ -94,3 +94,25 @@ export function auditSummary(entries: AuditEntry[]): {
   }
   return c;
 }
+
+// ---- Connecteurs view (§2.5, §14) --------------------------------------------------------
+// GET /api/v1/me (services/backend-core/app/main.py) returns {provider, connected, label} only —
+// it does not carry an identity-type field. The identity model per provider is static metadata
+// from the §14 connector table, not a fabricated connection status (ADR-017 spirit: never invent
+// STATUS; a provider's identity kind is fixed, known infrastructure fact), so it is safe to derive
+// client-side pending a backend field. Keys match the `provider` values in backend-core's
+// _PROVIDERS list, plus the org-included connectors (§2.5) for when those are surfaced too.
+const PROVIDER_IDENTITY_TYPE: Record<string, string> = {
+  github: "OAuth utilisateur",
+  slack: "OAuth utilisateur",
+  notion: "OAuth utilisateur",
+  m365: "Permissions déléguées",
+  database: "Compte de service",
+  browser: "Aucune / éphémère",
+  scheduler: "Service token",
+};
+
+// Fallback for any connector not yet in the table above: the generic scoped-credential bucket.
+export function identityTypeLabel(provider: string): string {
+  return PROVIDER_IDENTITY_TYPE[provider] ?? "Token par projet";
+}

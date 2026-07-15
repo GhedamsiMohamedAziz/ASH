@@ -1,54 +1,79 @@
-// Audit view (§16.1, §4.4) — the governance moat made visible. Renders the gateway's audit
-// trail with the §4.5 colour semantics: who acted, on whose behalf (Mode B), the tool, the
-// allow/deny/approval verdict, and any DLP-redacted secret categories. Pure mapping lives in
-// pages.ts (tested); this is presentation only.
-import React from "react";
+// Audit view (§16.1, §4.4) — shadcn/ui. Fetches the REAL audit trail for the conversation from
+// backend-core (same fetch+authHeaders pattern as the Mémoires/Connecteurs tabs) and polls it.
+// No mock: if the backend has nothing yet (or is unreachable), we render the empty state rather
+// than fabricate rows (tolerant-proxy principle, ADR-017). Pure mapping (auditRow/auditSummary)
+// lives in pages.ts (tested).
+import React, { useEffect, useState } from "react";
 import { auditRow, auditSummary, type AuditEntry } from "./pages.ts";
-import "./tokens.css";
+import { authHeaders } from "./auth.ts";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { ShieldCheck, Shield } from "lucide-react";
 
-// A sample trail so the panel renders without a backend — mirrors the governance demo:
-// search (ok) → create_pr on-behalf-of (Mode B) → a read whose output DLP scrubbed →
-// merge_pr gated (needs_approval) then allowed after re-mint → a denied tool.
-const DEMO_AUDIT: AuditEntry[] = [
-  { ts: 1784283901, actor: "usr_dev", on_behalf_of: null, action: "tool.call", tool: "github.search", status: "ok", redacted: [] },
-  { ts: 1784283903, actor: "agent-org@org_1", on_behalf_of: "usr_mehdi", action: "tool.call", tool: "github.create_pr", status: "ok", redacted: [] },
-  { ts: 1784283905, actor: "usr_dev", on_behalf_of: null, action: "tool.call", tool: "github.read", status: "ok", redacted: ["github_token"] },
-  { ts: 1784283907, actor: "usr_dev", on_behalf_of: null, action: "tool.call", tool: "github.merge_pr", status: "needs_approval", redacted: [] },
-  { ts: 1784283911, actor: "usr_dev", on_behalf_of: null, action: "tool.call", tool: "github.merge_pr", status: "ok", redacted: [] },
-  { ts: 1784283913, actor: "usr_dev", on_behalf_of: null, action: "tool.call", tool: "database.write", status: "denied", redacted: [], reason: "tool not in allowed_tools" },
-];
+const STATUS_CLASS: Record<string, string> = {
+  green: "text-emerald-400", amber: "text-amber-400", rose: "text-rose-400", muted: "text-muted-foreground",
+};
 
-export function AuditPanel({ entries = DEMO_AUDIT }: { entries?: AuditEntry[] }) {
-  const rows = entries.map(auditRow);
-  const s = auditSummary(entries);
+export function AuditPanel({ entries, conversationId, live = true }:
+  { entries?: AuditEntry[]; conversationId?: string; live?: boolean }) {
+  const [fetched, setFetched] = useState<AuditEntry[] | null>(null);
+
+  useEffect(() => {
+    if (!live || !conversationId) return;
+    let stop = false;
+    const pull = () =>
+      fetch(`/api/v1/conversations/${conversationId}/audit`, { headers: authHeaders() })
+        .then((r) => r.json())
+        .then((j) => { if (!stop) setFetched((j.audit as AuditEntry[]) ?? []); })
+        .catch(() => { if (!stop) setFetched((prev) => prev ?? []); });
+    pull();
+    const iv = setInterval(pull, 1500);
+    return () => { stop = true; clearInterval(iv); };
+  }, [live, conversationId]);
+
+  // Real data only: live fetch result, or an explicit `entries` override (e.g. embedding this
+  // panel without a conversation yet) — never a fabricated mock. Empty until the backend answers.
+  const source: AuditEntry[] = live ? (fetched ?? []) : (entries ?? []);
+  const rows = source.map(auditRow);
+  const s = auditSummary(source);
+
   return (
-    <aside className="audit">
-      <header className="audit-head">
-        <span className="audit-title">Journal d'audit</span>
-        <span className="audit-summary">
-          <span className="green">{s.ok} autorisés</span>
-          {s.needs_approval > 0 && <> · <span className="amber">{s.needs_approval} en attente</span></>}
-          {s.denied > 0 && <> · <span className="rose">{s.denied} refusés</span></>}
-          {s.redactedCalls > 0 && <> · <span className="cyan">{s.redactedCalls} caviardés</span></>}
-        </span>
+    <aside className="flex h-full flex-col bg-background">
+      <header className="flex flex-col gap-2 border-b px-4 py-3">
+        <div className="flex items-center gap-2 font-semibold">
+          <ShieldCheck className="size-4 text-emerald-400" /> Journal d'audit
+        </div>
+        <div className="flex flex-wrap gap-1.5 text-xs">
+          <Badge variant="secondary" className="text-emerald-400">{s.ok} autorisés</Badge>
+          {s.needs_approval > 0 && <Badge variant="secondary" className="text-amber-400">{s.needs_approval} en attente</Badge>}
+          {s.denied > 0 && <Badge variant="secondary" className="text-rose-400">{s.denied} refusés</Badge>}
+          {s.redactedCalls > 0 && <Badge variant="secondary" className="text-cyan-400">{s.redactedCalls} caviardés</Badge>}
+        </div>
       </header>
-      <div className="audit-rows">
-        {rows.length === 0 && <div className="row muted empty">Aucune action encore.</div>}
-        {rows.map((r) => (
-          <div key={r.id} className="audit-row">
-            <span className="audit-time mono muted">{r.time}</span>
-            <span className={`audit-status ${r.color}`}>{r.statusLabel}</span>
-            <span className="audit-tool mono">{r.tool}</span>
-            <span className="audit-who muted">{r.who}</span>
-            {r.redactions.length > 0 && (
-              <span className="audit-redactions cyan" title="DLP a masqué ces secrets (§13.5)">
-                🛡 {r.redactions.join(", ")}
-              </span>
-            )}
-            {r.reason && <span className="audit-reason muted">{r.reason}</span>}
-          </div>
-        ))}
-      </div>
+
+      <ScrollArea className="flex-1">
+        <div className="flex flex-col gap-3 p-3">
+          {rows.length === 0 && <p className="italic text-muted-foreground">Aucune action encore.</p>}
+          {rows.map((r, i) => (
+            <div key={r.id + i}>
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+                <span className="font-mono text-[11px] text-muted-foreground">{r.time}</span>
+                <span className={`text-xs font-semibold ${STATUS_CLASS[r.color] ?? ""}`}>{r.statusLabel}</span>
+                <span className="font-mono">{r.tool}</span>
+                <span className="text-xs text-muted-foreground">{r.who}</span>
+                {r.redactions.length > 0 && (
+                  <span className="flex items-center gap-1 text-xs text-cyan-400">
+                    <Shield className="size-3" /> {r.redactions.join(", ")}
+                  </span>
+                )}
+                {r.reason && <span className="basis-full text-xs text-muted-foreground">{r.reason}</span>}
+              </div>
+              {i < rows.length - 1 && <Separator className="mt-3 opacity-50" />}
+            </div>
+          ))}
+        </div>
+      </ScrollArea>
     </aside>
   );
 }

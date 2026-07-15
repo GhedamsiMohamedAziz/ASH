@@ -17,6 +17,7 @@ export interface ViewModel {
   text: string;
   interactive?: boolean; // renders Approve/Deny buttons
   monospace?: boolean;   // tool lines are IBM Plex Mono (§4.5)
+  approvalId?: string;   // carried on approval rows so the card doesn't index back into events
 }
 
 // Map one AgentEvent to a view-model row (§4.3).
@@ -35,6 +36,7 @@ export function toViewModel(ev: AgentEvent, locale = "fr"): ViewModel {
         text: `✓ ${d.tool} — ${d.result_summary ?? d.status ?? ""}` };
     case "agent.approval.needed":
       return { kind: "approval", color: "amber", interactive: true,
+        approvalId: d.approval_id ? String(d.approval_id) : undefined,
         text: `${d.tool}${d.args_summary ? " — " + d.args_summary : ""}` };
     case "agent.cron.created":
       return { kind: "cron", color: "amber",
@@ -50,6 +52,19 @@ export function toViewModel(ev: AgentEvent, locale = "fr"): ViewModel {
     case "agent.error":
       return { kind: "error", color: "rose", text: String(d.message ?? d.code ?? "erreur") };
   }
+}
+
+// Stream resume (§2.3): each event carries a monotone `seq` per conversation. On
+// reconnect the client resends its tracked `last_seq`; events with seq <= last_seq
+// have already been applied and must be ignored (dedup of replayed/out-of-order
+// events). Pure so it's testable without a live socket — the caller persists
+// `lastSeq` (e.g. in a ref) across reconnects.
+export function applyIncomingEvent(
+  ev: AgentEvent,
+  lastSeq: number,
+): { accepted: AgentEvent | null; lastSeq: number } {
+  if (ev.seq <= lastSeq) return { accepted: null, lastSeq };
+  return { accepted: ev, lastSeq: ev.seq };
 }
 
 // Reduce a stream into ordered rows, coalescing text deltas into one bubble (§4.3).

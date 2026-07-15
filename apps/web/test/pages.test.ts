@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { auditRow, auditSummary, automationRow, groupMemories } from "../src/pages.ts";
+import { auditRow, auditSummary, automationRow, groupMemories, identityTypeLabel } from "../src/pages.ts";
 
 test("memories grouped by kind with labels (§4.4)", () => {
   const g = groupMemories([
@@ -67,4 +67,22 @@ test("audit summary counts verdicts + redacted calls", () => {
   assert.equal(s.ok, 2);
   assert.equal(s.denied, 1);
   assert.equal(s.redactedCalls, 1);
+});
+
+// ---- connectors identity type (§2.5, §14) ----
+test("identityTypeLabel: user-OAuth connectors", () => {
+  assert.equal(identityTypeLabel("github"), "OAuth utilisateur");
+  assert.equal(identityTypeLabel("slack"), "OAuth utilisateur");
+  assert.equal(identityTypeLabel("notion"), "OAuth utilisateur");
+});
+
+test("identityTypeLabel: delegated + service-account connectors", () => {
+  assert.equal(identityTypeLabel("m365"), "Permissions déléguées");
+  assert.equal(identityTypeLabel("database"), "Compte de service");
+});
+
+test("identityTypeLabel: org-included connectors + unknown fallback", () => {
+  assert.equal(identityTypeLabel("browser"), "Aucune / éphémère");
+  assert.equal(identityTypeLabel("scheduler"), "Service token");
+  assert.equal(identityTypeLabel("some_future_provider"), "Token par projet");
 });
