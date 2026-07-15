@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from .backends import build_backend
 from .config import load_config
 from .models import CompleteRequest, CompleteResponse, ErrorBody, ErrorEnvelope
+from .openai_compat import router as openai_router
 from .proxy import BudgetExceeded, Proxy
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,10 @@ cfg = load_config()
 # `provider: stub` (default) stays offline; `provider: anthropic` spends real money via
 # ANTHROPIC_API_KEY. One config edit flips the money-spending edge — no code change (§G.4).
 proxy = Proxy(cfg, default_backend=build_backend(cfg.provider))
+
+# OpenAI-compatible stub surface (`POST /v1/chat/completions`) so OpenCode can drive its LLM
+# through llm-proxy on the KEYLESS dev/CI path — deterministic, no API key (§12, openai_compat.py).
+app.include_router(openai_router)
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:

@@ -1,5 +1,19 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "llm-proxy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Axone llm-proxy",
+      "options": {
+        "baseURL": "{env:LLM_PROXY_BASE_URL}",
+        "apiKey": "{env:LLM_PROXY_API_KEY}"
+      },
+      "models": {
+        "eco": { "name": "Eco tier" },
+        "frontier": { "name": "Frontier tier" }
+      }
+    }
+  },
   "mcp": {
     "mcp-gateway": {
       "type": "remote",
