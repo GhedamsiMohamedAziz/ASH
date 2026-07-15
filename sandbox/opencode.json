@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mcp-gateway": {
+      "type": "remote",
+      "url": "https://mcp-gateway.internal:8443/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:TASK_JWT}"
+      }
+    }
+  },
+  "tools": {
+    "github*": true,
+    "browser*": true,
+    "database*": true,
+    "m365*": true,
+    "slack*": true,
+    "notion*": true
+  }
+}

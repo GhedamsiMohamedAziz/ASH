@@ -652,6 +652,18 @@ CREATE INDEX ON entity_facts (entity_id, predicate, valid_to);
 - **Transparence produit** : page "Mémoires" dans l'UI (§4.4) — l'utilisateur voit, édite et supprime chaque mémoire ; `user-erasure` purge `memories`, `entities`, `entity_facts` et les notes workspace.
 - **Consolidation** : job Trigger.dev `memory-consolidation` (hebdomadaire, §15.7) — fusion des doublons, clôture des contradictions, décroissance des mémoires jamais réutilisées, compaction des notes workspace > 2 000 lignes. Sans ce job, la mémoire devient du bruit en 6 mois.
 
+#### 9.1.4 `source_trust` — provenance de confiance des mémoires
+
+Toute mémoire (`memories`, `entity_facts`) porte un `source_trust` ∈ `{trusted, untrusted}` —
+**aucune écriture sans ce champ**. Il relie la mémoire au taint tracking (§17.6.3) : une mémoire
+écrite pendant un **tour contaminé** est stampée `untrusted`, dérivée du drapeau de taint du tour,
+jamais inférée du contenu. Un tour propre écrit `trusted`.
+
+Règles de transition : un tour propre qui confirme une mémoire existante peut la **promouvoir**
+vers `trusted` ; l'inverse n'arrive jamais (une confirmation contaminée ne dégrade pas une mémoire
+de confiance). Au rappel, les mémoires `untrusted` sont utilisables mais signalées comme telles,
+de sorte qu'un fait injecté ne se blanchit pas en devenant « ce que l'agent sait ».
+
 ### 9.2 Planning
 
 - Classifie la requête : `chat_simple` (réponse directe, pas de sandbox) vs `task_agentique` (nécessite outils/sandbox). La classification est effectuée par un modèle léger (Haiku, few-shot, sortie JSON `{class, confidence}` ; `confidence < 0,7` ⇒ classe `ambigu`) en ~250 ms et est **réversible** : un tour `chat_simple` peut être escaladé en `task_agentique` en cours de route (`agent.escalated`) si le besoin d'outils apparaît — voir §7.2.1. Le cas ambigu démarre toujours léger.
@@ -1478,6 +1490,29 @@ Réglages d'exploitation :
 - **PITR** : WAL archivés en continu (RPO 15 min), restauration testée trimestriellement (§24.9).
 - Connexions : PgBouncer en transaction pooling devant Postgres (les services FastAPI/Go sont nombreux et bavards).
 
+### 16.4 Isolation multi-tenant (RLS, imposée par la base)
+
+L'isolation entre organisations n'est **pas** laissée à la couche applicative : elle est imposée
+par Postgres via Row-Level Security, de sorte qu'un bug applicatif ne peut pas faire fuiter une
+autre org. Trois pièces (migration `0004_tenant_isolation.sql`, testées en live) :
+
+1. **`org_id` sur les 10 tables à portée tenant** — conversations, messages, memories, entities,
+   entity_facts, scheduled_jobs, scheduled_runs, oauth_tokens, audit_log, usage_daily. Ajouté par
+   migration *expand* (jamais de réécriture destructive de la DDL initiale, §16.3), avec backfill
+   dénormalisé depuis la ligne parente.
+2. **Rôle applicatif non-superuser** (`olma_app`) : les services se connectent avec ce rôle, jamais
+   avec le propriétaire/superuser (qui contournerait RLS). `FORCE ROW LEVEL SECURITY` impose la
+   policy même au propriétaire.
+3. **Policy `tenant_isolation`** sur chaque table : `USING (org_id = current_setting('app.org_id', true))`
+   et `WITH CHECK` identique — la lecture ET l'écriture sont bornées à l'org. `app.org_id` est posé
+   par le pool à chaque check-out depuis le **claim `org` du JWT vérifié**, jamais depuis un
+   paramètre de requête. `current_setting(..., true)` renvoie NULL si non posé → `org_id = NULL`
+   ne matche rien → une session sans org **ne voit rien** (fail-closed).
+
+**Test de traversée obligatoire (CI)** : une session `org_B` voit 0 ligne de `org_A` ; `WITH CHECK`
+bloque un insert forgé cross-org ; et le test **échoue si on retire la RLS** (le leak réapparaît) —
+prouvant que RLS est bien la frontière, pas un filtre applicatif accessoire.
+
 ---
 
 ## 17. Sécurité
@@ -1565,6 +1600,38 @@ Un produit qui détient les tokens OAuth d'une entreprise doit avoir ce processu
 | **Post-mortem** | Sans blâme, 5 pourquoi, actions correctives trackées ; mise à jour des runbooks et du corpus de détection | < 1 sem. |
 
 Exercice **tabletop semestriel** (scénario : token GitHub org exfiltré via injection) — la checklist go-live (Annexe D) exige un premier exercice avant l'ouverture commerciale. Contacts pré-établis : CERT tunisien (tunCERT) / autorité de protection des données selon la juridiction du client.
+
+### 17.6 Taint tracking & classes d'egress (anti-exfiltration par injection)
+
+Le risque : un contenu non fiable lu par l'agent (issue GitHub, page web, mail) contient une
+injection qui pousse l'agent à exfiltrer des données via un outil de sortie (ouvrir une PR
+publique, poster un message). La parade n'est **pas** un classifieur.
+
+**17.6.1 La détection n'est pas une frontière.** On ne remplace jamais un contrôle par un
+classifieur ou une consigne au modèle. Le drapeau de taint est posé mécaniquement par la Gateway à
+partir des métadonnées d'outil, pas inféré du contenu.
+
+**17.6.2 Registre d'outils.** Tout outil MCP déclare à son enregistrement **`ingests_untrusted`**
+(son résultat introduit-il du contenu non fiable dans le tour ?) et **`egress_class`**
+(`public` = envoie des données HORS de la frontière de confiance ; `internal` ; `none`). Un outil
+sans ces deux attributs **ne peut pas être enregistré** — erreur au démarrage (`register()` la lève).
+
+**17.6.3 Taint par tour.** Dès qu'un outil `ingests_untrusted` renvoie un résultat non vide, le
+tour (`task_id`) est marqué contaminé — drapeau Redis, **monotone** (une fois posé, jamais levé :
+un tour ne peut pas se « décontaminer » en faisant ensuite quelque chose de propre). Le `task_id`
+et l'`origin` (interactif|planifié) sont portés par le TASK JWT.
+
+Sur un tour contaminé, **tout outil `egress_class = public` est reclassé, quelle que soit la
+policy** :
+- tour **interactif** → `require_approval` (l'humain valide la sortie, arguments bruts §17.6.4) ;
+- run **planifié** → échec `E_GUARD_TAINTED_EGRESS` (pas d'humain pour valider — on ne sort pas).
+
+**17.6.4 Cartes d'approbation d'egress.** Jamais de résumé généré par le modèle sur une carte
+d'approbation de sortie publique : le contenu à valider est présenté en **arguments bruts** (un
+résumé pourrait masquer l'exfiltration qu'on demande à l'humain de repérer).
+
+**Lien mémoire (§9.1.4).** Le même drapeau de taint impose que toute mémoire écrite pendant un
+tour contaminé le soit en `source_trust = untrusted`.
 
 ---
 
@@ -2147,6 +2214,10 @@ platform/
 | 014 | **Table de prix = donnée dans `config.yaml`, mais garde-fou de dérive `reference_prices.py`** | Le prix pilote l'admission budgétaire et la facturation ; un chiffre périmé sur-rejette et sur-facture. La table reste le seam de swap, mais le chargeur refuse de démarrer si un modèle Anthropic dévie de la référence canonique | Prix codés en dur (fige le seam), pas de garde (le bug 15/75 vs 5/25 passe silencieusement en prod) |
 | 015 | **Boucle de ré-approbation : le Prompt Layer re-mint, l'outil passe de `approval_tools` à `allowed_tools`** | Le Gateway ne renvoie que `needs_approval` et n'exécute jamais un outil gaté inline ; après accord humain, on re-mint un TASK JWT frais où seul l'outil approuvé est promu, puis on ré-invoque via le Gateway — le minting reste dans le Prompt Layer | Le backend mute la liste de tokens lui-même (minting hors du seul émetteur), ré-invocation sans re-mint (le Gateway reboucle éternellement sur `needs_approval`) |
 | 016 | **`fire_job` enregistre la clé d'idempotence uniquement au succès (dedup-on-success)** | Enregistrer la clé avant `build_task` fait qu'un échec de build (prompt qui trip un guardrail) marque le fire comme « traité » : le retry Trigger.dev tombe sur la branche doublon et l'occurrence est perdue à jamais. On enregistre après la production effective de la tâche | Marquer à l'entrée (at-most-once-on-attempt, fires perdus silencieusement), pas de dedup (double exécution au retry) |
+| 017 | **Le read-model du control-room (§4.4) traverse backend-core en proxy vers le Prompt Layer, jamais en direct** | La page Mémoires et l'onglet Connecteurs lisent `/api/v1/memories` et `/api/v1/me` sur backend-core, qui relaie `/internal/memory/list` du Prompt Layer (là où vit le Memory MCP) ; l'UI n'a qu'un seul origin, backend-core reste le point d'agrégation d'identité et le `source_trust` remonte tel quel du `TaintLedger` (une mémoire d'un tour contaminé s'affiche « non fiable ») ; proxy tolérant aux pannes (liste vide si le Prompt Layer est down, le panneau rend au lieu de casser) | UI qui tape le Prompt Layer en direct (deuxième origin, CORS, fuite de la topologie interne), statut de connecteur inventé côté client (mentirait sur l'absence de token OAuth) |
+| 018 | **Identité dérivée d'un TOKEN RS256 auth-service à la frontière de requête, avec repli `usr_dev`, JWT unifié (fin de la divergence HS256)** | `current_identity()` lit `Authorization: Bearer`, le vérifie via le `verify_token()` RS256/JWKS importable de l'auth-service (§13.4), et pose `user_id`/`org_id` ; token absent/invalide → repli `usr_dev`/`org_1` pour que le web sans login et les tests existants marchent inchangés. `/whoami` réécrit sur le même vérifieur — les deux piles JWT (auth-service RS256 vs `olma_shared` HS256) ne pouvaient pas se vérifier mutuellement | Garder `usr_dev` codé en dur (pas de multi-tenant réel), une frontière qui exige un token (casse le web sans login + 40 tests), deux schémas JWT concurrents (le `/whoami` HS256 mort ne vérifie aucun token réel émis) |
+| 019 | **Le store de credentials `CredentialResolver` (AES-256-GCM réel) câblé dans la Gateway ; connexion par PAT `POST /v1/connect`, `/me` lit l'état réel** | La Gateway partage un `InMemoryVault`+`CredentialResolver` entre l'injection par appel (`resolveCredential`) et la surface HTTP `/v1/connect` : un token stocké est visible au prochain appel d'outil (§13.2). `/me` reflète `/v1/connections`, plus d'état inventé. Mode A (token perso) d'abord, sinon credential de service org (Mode B) ; un vrai manque → `CredentialMissing` → refus `E_CONN_NEEDS_CONNECTION` (fail-closed). Un vrai OAuth navigateur (client_id/secret) reste la seule pièce à clé | La fermeture env `GITHUB_TOKEN` jetable (secret ambiant partagé, deputy confus §3.2), `oauth_tokens` + `vault.ts` construits mais orphelins, statut de connecteur codé `false` (mensonge produit) |
+| 020 | **Quota-par-consommation appliqué au point d'étranglement llm-proxy (`Proxy.complete`), plafond org optionnel** | Chaque appel LLM passe déjà par `Proxy.complete` avec `org_id` + coût réel : avant l'appel, si un plafond org est configuré, `check_turn` compare la dépense cumulée + l'estimation → dépassement = 402 `E_BUDGET_EXCEEDED` ; après succès, `ledger.record(org, mois, coût)`. Sans plafond → jamais bloquant (le chemin live reste intact). Donne enfin à `billing.py` une source d'usage réelle (forme `usage_daily`) ; seul le charge PSP reste à clé | Coût calculé puis **jeté** (log structuré non agrégé), `BudgetGuard`/`Ledger` testés-mais-non-câblés, budget par-appel llm-proxy inerte (le runner n'envoie pas `budget_usd`), plafond admin écrit mais jamais lu |
 
 ---
 
@@ -2652,6 +2723,48 @@ une `ANTHROPIC_API_KEY` (plafonnée) + un `GITHUB_TOKEN` scopé à un dépôt je
 (99,9 % sur 7 jours) exige une fenêtre de production mesurée. Tout le reste est construit,
 durci et testé.
 
+**Itération control-room (§4.4, orchestrée en 3 lanes parallèles, arêtes de fichiers disjointes) :**
+la page **Mémoires** et l'onglet **Connecteurs** deviennent réels (ADR-017). Prompt Layer expose
+`/internal/memory/list|save` sur un Memory MCP partagé (3 mémoires seed dont une écrite sous un
+tour tainté → `source_trust=untrusted`, la preuve vivante du lien taint→mémoire §9.1.4) ;
+backend-core relaie `/api/v1/memories` et sert un `/me` à statut de connecteur **honnête**
+(`connected:false` partout tant qu'aucun token OAuth n'est stocké — pas de statut inventé) ; le
+runner capture « retiens… » en `memory.save` best-effort. Côté web, panneau droit **shadcn Tabs**
+(Audit · Mémoires · Connecteurs), badge **latence par tour** à côté du coût. Vérifié en direct
+contre la stack live : round-trip « retiens… » 3→4 mémoires, badge « non fiable » sur la mémoire
+tainte, transform Vite propre. **58 tests verts** sur les lanes touchées (2 prompt-layer + 40
+backend-core + 16 web).
+
+**Itération « punch-list » (auth, connecteurs, quota, OpenCode — audit 4 agents + build 5 lanes
+parallèles à fichiers disjoints).** Diagnostic honnête : les quatre pièces étaient *construites +
+testées mais non câblées* au chemin live. Câblées cette itération, chacune en préservant le
+comportement par défaut de la stack :
+- **Arête GitHub réelle** — `buildGateway` monte la vraie surface `GithubMcp` ; `GITHUB_TOKEN` bascule
+  `StubBackend→RestBackend` sans changement de code, token injecté par le résolveur (pas d'ambiant) ;
+  preuve **sans clé** (mock fetch) que le token atteint l'en-tête `Authorization` (ADR-012).
+- **Identité (ADR-018)** — `current_identity()` dérive `user_id`/`org_id` d'un token RS256 auth-service
+  vérifié, repli `usr_dev` ; `/whoami` unifié sur le vérifieur RS256 (fin de la divergence HS256).
+- **Connecteurs (ADR-019)** — `CredentialResolver` AES-256-GCM réel câblé dans la Gateway ; `POST
+  /v1/connect` (PAT) + `/me` à statut réel ; bouton « Connecter » dans l'onglet Connecteurs.
+- **Quota (ADR-020)** — boucle mètre→applique dans `Proxy.complete` : plafond org dépassé → 402
+  `E_BUDGET_EXCEEDED`, succès → ledger ; sans plafond, chemin live intact.
+- **OpenCode** — `sandbox/opencode.json` câble la Gateway comme unique serveur MCP (le binaire réel
+  charge la config) ; le lancement conteneur reste bloqué-environnement (tour agentique encore simulé).
+
+Vérifié **en direct contre la stack live**, pas seulement en tests : PAT → `github` `false→true` ;
+token frappé → `/me` = `usr_mehdi` ; org plafonné \$0 → 402 tandis qu'un appel sans org → 200 ;
+tour agentique `github.search → ok` sans régression. **`make test-all` : 39 suites vertes**
+(gitleaks, migration-lint, codegen inclus). Restent uniquement les pièces à entrée externe : OAuth
+navigateur (client_id/secret), OIDC réel, charge PSP, et un runtime conteneur pour un vrai tour OpenCode.
+
+**Porte d'entrée login (fermeture de la boucle auth).** L'identité RS256 (ADR-018) avait un
+vérifieur mais aucune porte d'entrée dans l'UI ; ajoutée cette itération : auth-service tourne
+(8091), backend-core `POST /api/v1/login` proxie `/oidc/dev-login` → token RS256, et le web
+`LoginControl` (barre haute, presets `usr_mehdi`/`usr_sarah`) le stocke en `localStorage` et
+l'envoie en Bearer. Bout en bout live : login → conversation possédée par l'utilisateur choisi,
+déconnexion → repli `usr_dev`. Additif (sans token, comportement identique à avant). 3 tests
+`/login` offline (400 sans sub, 502 sans auth-service, proxy + token au succès).
+
 
 **Changelog v3.5 :**
 - **§3** Modes de déploiement : **Mode A (agent personnel)** — le modèle du blueprint — et **Mode B (agent d'équipe partagé)**, credentials de l'organisation + identité du demandeur conservée pour l'autorisation, les approbations et l'audit. Approbateurs désignés, claim `on_behalf_of`, mémoire organisationnelle par défaut, pool de sandboxes avec git comme état de vérité, table des deltas par section.
@@ -2702,3 +2815,100 @@ durci et testé.
 - Nouveau serveur **Scheduler MCP** : l'agent peut créer, lister, modifier, mettre en pause et supprimer des tâches planifiées pour son utilisateur.
 - Nouvelles sections : Stratégie de tests & évals d'agents (§20), Taxonomie d'erreurs & contrats (§21), Modèle de coûts & capacité (§25), Architecture Decision Records (§28), Glossaire (Annexe B).
 - Sécurité des webhooks entrants détaillée (Slack signing, Bot Framework JWT), versioning d'API et de schémas d'événements, idempotence généralisée.
+
+---
+
+## Annexe J — Matrice d'état d'implémentation (réconciliation)
+
+> **Produite par la réconciliation « reprise » (Partie 3), 2026-07-14.** Confronte le code réel
+> à la spec. **⬜ non commencé · 🟦 partiel / stub · 🟩 fait + testé.** À mettre à jour à chaque
+> merge. Le repo git existe déjà (commits `first commit`, `all`) ; l'arbre de travail est propre.
+>
+> **Note de version.** Le nouveau `CLAUDE.md` référence une spec `docs/README.md` v4.3 et des
+> sections (**taint tracking §17.6**, **RLS FORCE §16.4**, **source_trust §9.1.4**,
+> `egress_class`/`ingests_untrusted`) **absentes de ce blueprint (v4.2)**. Ces sections restent
+> **à écrire** avant que « la spec fait foi » ne résolve. Tant qu'elles n'existent pas, cette
+> annexe est la référence d'état.
+
+### J.1 — Matrice par capacité
+
+| Capacité | État | Preuve (fichier) |
+|---|---|---|
+| Monorepo + CI (lint/tests/gitleaks) | 🟩 | `.github/workflows/ci.yml`, `Makefile`, `tools/test_all.sh` |
+| Schémas partagés TS↔Py + validation croisée | 🟩 | `packages/schemas/`, `packages/shared-ts/xcheck.ts` |
+| Taxonomie d'erreurs §21 partagée | 🟩 | `packages/errors/` |
+| DDL initial (17 tables, pgvector, audit partitionné) | 🟩 | `db/migrations/0001_init.sql`, `0002`, `0003` |
+| **`org_id` sur les 10 tables tenant (invariant #3)** | **🟩** | `db/migrations/0004_tenant_isolation.sql` — ajout + backfill sur conversations/messages/memories/entity_facts/oauth_tokens/scheduled_runs ; les 4 autres l'avaient |
+| **RLS `FORCE` + policy `tenant_isolation` + rôle non-superuser (§16.4)** | **🟩** | `0004` ; test `test_rls_isolation.py` (traversée org_A/org_B, prouve 0 fuite ET échoue si RLS retiré) |
+| **`source_trust` sur memories + writer taint→untrusted (§9.1.4, invariant #9)** | **🟩** | colonne + CHECK (`0004`) ; `MemoryMcp.save(task_id=…)` dérive `source_trust` du `TaintLedger` → un tour taint écrit `untrusted`, un tour propre `trusted` (jamais démoté) ; 5 tests. Reste : pointer le ledger prompt-layer et la Gateway sur le même Redis (config de déploiement, comme `RunsStore`) |
+| auth-service (register/login/OTP/JWKS/rotation) | 🟩 | `services/auth-service/` (17 tests) |
+| backend-core REST+WS, `/whoami` JWT | 🟩 | `services/backend-core/app/main.py` (24 tests) |
+| Prompt Layer : pipeline 5 étages + mint TASK JWT | 🟩 | `services/prompt-layer/app/pipeline.py` (~90 tests) |
+| MCP Gateway : authZ + audit + DLP (chemin ok ET erreur) | 🟩 | `services/mcp-gateway/src/{gateway,dlp}.ts` (21 tests) |
+| **Registre d'outils `ingests_untrusted`/`egress_class` (§17.6.2)** | **🟩** | `services/mcp-gateway/src/taint.ts` ; `register()` **exige** la meta (erreur sinon, invariant #4) ; 13 sites déclarés |
+| **Taint tracking + gating egress (§17.6.3)** | **🟩** | `gateway.ts` : ingest untrusted → taint ; egress public sur turn taintée → approbation (interactif) / `E_GUARD_TAINTED_EGRESS` (planifié) ; `task_id`/`origin` portés par le TASK JWT ; monotone ; 5 tests |
+| Boucle approbation + **ré-approbation (ADR-015)** | 🟩 | `pipeline.reapprove_task_jwt` + `/internal/reapprove` |
+| Révocation au feu (§18.3, `E_PERM_REVOKED`) | 🟩 | `services/prompt-layer/app/scheduled.py` (9 tests) |
+| Arête LLM réelle (`AnthropicBackend`) derrière stub | 🟩 | `services/llm-proxy/app/backends.py` |
+| Arête GitHub réelle (`RestBackend`) derrière stub | 🟩 | `services/mcp-servers/github/src/rest.ts` |
+| Orchestrator Go (machine d'états, warm pool) | 🟩 | `services/orchestrator/` (15 tests) |
+| OpenCode réel (`opencode serve`) | 🟩 | `opencode.go` + `TestRealOpenCodeServer` |
+| UI web : control-room shadcn (chat + latence/tour + panneau à onglets **Audit · Mémoires · Connecteurs**) | 🟩 | `apps/web/src/{Chat,AuditPanel,RightPanel}.tsx` + `components/ui/tabs.tsx` ; carte d'approbation index-safe (`approvalId`), 16 tests web |
+| **Read-model Mémoires + Connecteurs réels (§4.4, ADR-017)** | **🟩** | Prompt Layer `GET/POST /internal/memory/*` (Memory MCP partagé, 3 seeds dont 1 `untrusted` par tour tainté) ; backend-core proxy `GET /api/v1/memories` ; capture « retiens… » → `memory.save` best-effort dans le tour ; round-trip live vérifié (3→4 mémoires) ; 2+ tests |
+| **Connecteur GitHub réel derrière la Gateway (câblage `buildGateway`)** | **🟩** | `mcp-gateway/src/server.ts` monte la vraie surface `GithubMcp` ; `GITHUB_TOKEN` bascule `StubBackend→RestBackend` sans changement de code (ADR-012) ; `server.test.ts` prouve **sans clé** (mock fetch) que le token atteint l'en-tête `Authorization` de l'appel REST ; tour live `github.search → ok` ; 33 tests gateway |
+| **Identité RS256 auth-service câblée dans le chemin live + porte d'entrée login (ADR-018)** | **🟩** | `backend-core/app/identity.py` `current_identity()` — Bearer RS256 vérifié via `verify_token()` de l'auth-service (shim importlib, offline) → `user_id`/`org_id` ; repli `usr_dev`/`org_1`. Porte d'entrée : backend-core `POST /api/v1/login` proxie l'auth-service `/oidc/dev-login` → token RS256 ; web `LoginControl` (barre haute, presets) le stocke et l'envoie en Bearer. Vérifié live bout en bout : login `usr_mehdi/org_9` → conversation possédée par `usr_mehdi` ; déconnexion → `usr_dev`. 11 tests identity+login. Reste externe : le round-trip OIDC réel (Entra/Slack) remplace `/oidc/dev-login`, l'étape mint reste |
+| **Store de credentials + connexion par PAT (§13.2, ADR-019)** | **🟩** | `mcp-gateway/src/vault.ts` (`CredentialResolver` AES-256-GCM réel) câblé dans `server.ts` ; `POST /v1/connect` + `GET /v1/connections` ; backend-core `POST /api/v1/connect` proxy + `/me` lit l'état réel. Vérifié live : connexion PAT → `github` bascule `false→true` ; injection du token stocké dans l'appel d'outil. Reste externe : OAuth navigateur (client_id/secret par fournisseur) |
+| **Quota-par-consommation appliqué live (§30.1, ADR-020)** | **🟩** | boucle mètre→applique dans `llm-proxy/app/proxy.py::Proxy.complete` : plafond org dépassé → 402 `E_BUDGET_EXCEEDED` + `rejected:true`, succès → `ledger.record`. Vérifié live : org plafonné à \$0 → 402, appel sans `org_id` → 200 (chemin live intact) ; 27 tests llm-proxy. Reste externe : le charge PSP réel |
+| **Config MCP OpenCode (le sandbox démarre outillé)** | **🟩** (config) / **🟦** (exécution) | `sandbox/opencode.json` : `mcp-gateway` comme unique serveur MCP distant + allow-list d'outils depuis `profiles/` ; `COPY` dans le Dockerfile ; test de forme Go (`opencode_config_test.go`) + le vrai binaire opencode 1.17 charge la config (1 serveur reconnu). Le **lancement du conteneur** reste bloqué-environnement (pas de daemon Docker/cluster ici) — le tour agentique reste simulé côté runner |
+| **Facturation du dépassement d'usage (§30.1)** | **🟩** | `services/prompt-layer/app/billing.py` — siège actif + quota inclus, dépassement au réel + marge, split interactive/scheduled, TVA + conversion TND, émission idempotente par (org, mois) via `BillingProvider` (`StubBilling` par défaut) ; 7 tests. Seul le charge PSP réel (Stripe/PSP local) est key-gated, comme l'arête LLM |
+| **Confinement egress sandbox (réel, chemin runnable)** | **🟦** | NetworkPolicy K8s existe (`infra/helm/networkpolicy-sandbox.yaml`) mais **exige un cluster** ; le chemin compose local **ne contraint pas** l'egress |
+| Custody des credentials (chiffrement) | 🟦 | `vault.ts` AES-256-GCM **réel** (pas un stub), mais **clé locale**, pas d'enveloppe KMS |
+
+### J.2 — Réponses aux vérifications ouvertes
+
+1. **La facturation du dépassement d'usage existe-t-elle ?** **OUI désormais (🟩) — construit.**
+   Au *comptage* (`Ledger`/`usage_daily`) et à l'*enforcement* (`BudgetGuard` → `E_BUDGET_EXCEEDED`)
+   s'ajoute `billing.py` : calcul de facture depuis les enregistrements d'usage (siège actif + quota
+   inclus par siège, dépassement au réel + marge §30.1, split interactive/scheduled, TVA 19% +
+   conversion TND) et **émission idempotente** par (org, mois) via un seam `BillingProvider`
+   (`StubBilling` hors-ligne par défaut, PSP réel injectable). 7 tests. Le seul edge key-gated est
+   l'appel de charge au PSP — comme l'arête LLM.
+2. **La sortie réseau du sandbox est-elle réellement contrainte ou seulement décrite ?**
+   **🟦 décrite + applicable-si-K8s, non appliquée localement.** La NetworkPolicy
+   (`infra/helm/networkpolicy-sandbox.yaml`, egress → gateway:8443 uniquement) est réelle mais
+   nécessite un cluster. Le chemin exécutable (docker-compose) n'a **aucune** contrainte d'egress.
+   *Or le nouveau `CLAUDE.md` interdit K8s* — le mécanisme d'enforcement actuel est donc lui-même
+   hors-contrat, à remplacer par user-namespaces/seccomp/microVM.
+3. **messages/memories/conversations portent-ils `org_id` ? la RLS est-elle activée ?**
+   **OUI désormais (🟩) — corrigé (Session 2).** `db/migrations/0004_tenant_isolation.sql` ajoute
+   `org_id` (avec backfill) aux 10 tables tenant, un rôle applicatif **non-superuser** (`olma_app`),
+   et **RLS `FORCE` + policy `tenant_isolation`** clée sur `app.org_id` (issu du claim JWT vérifié,
+   `current_setting(...,true)` → NULL si absent → zéro ligne, fail-closed). Le test
+   `services/backend-core/tests/test_rls_isolation.py` prouve en live : (1) org_B voit 0 ligne de
+   org_A, (2) `WITH CHECK` bloque un insert forgé cross-org, (3) org_A voit les siennes, (4) **le
+   test échoue si on retire la RLS** (leak visible → la RLS est bien la frontière). Skip sans
+   `DATABASE_URL` (le chemin hors-ligne reste intact). *Était le plus gros écart de la réconciliation.*
+4. **Vault est-il réel ou un stub ?** **🟦 chiffrement réel, custody locale.** `vault.ts` fait
+   du vrai AES-256-GCM (seal/open, clé 32 octets, vérif du tag) — **pas un stub**. Mais la clé
+   est locale/in-process, **pas une enveloppe KMS cloud**. (Ce n'est pas HashiCorp Vault — ce
+   point est aligné avec le nouveau contrat qui l'interdit ; l'enveloppe KMS reste à faire.)
+
+### J.3 — État des tests (à cette réconciliation)
+
+`make test-all` : **36/37 suites vertes**. Un échec : `secret scan (gitleaks)` — **faux positif**
+sur `README.md:547`, un UUID d'exemple de doc (`Idempotency-Key: 7c9e6679-…`) détecté comme
+`generic-api-key`. Pas un vrai secret ; l'allowlist `.gitleaks.toml` ne couvre pas cette ligne
+de doc. *Reporté sans correction* (règle Partie 3 : rapporter ce qui casse, ne pas corriger).
+
+### J.4 — Écarts de contrat à trancher (le nouveau `CLAUDE.md` vs le construit)
+
+- **Stack interdite déjà construite :** NATS (bus), Trigger.dev (automatisations), gVisor
+  (ADR-002, sandboxes), K8s (enforcement egress) sont **construits + testés** mais **interdits**
+  par le nouveau contrat. Les remplacer (bus `SKIP LOCKED`, pg-boss/`pg_cron`, user-namespaces,
+  KMS enveloppe) exige des **ADR de renversement 017→022** (référencées mais non écrites).
+- **Spec cible :** les sections que le nouveau `CLAUDE.md` référence sont désormais **écrites** —
+  **§16.4** (RLS multi-tenant), **§17.6** (taint tracking & classes d'egress), **§9.1.4**
+  (`source_trust`) — documentant l'architecture réellement construite + testée. Reste : `docs/README.md`
+  n'existe pas (la spec vit dans `instructions.md`) — soit renommer/pointer, soit ajuster `CLAUDE.md`.
+
+Ces deux points sont **des décisions produit, pas du code** — à trancher avant d'agir.

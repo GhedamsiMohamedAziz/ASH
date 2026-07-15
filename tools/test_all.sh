@@ -36,6 +36,8 @@ echo "── TypeScript (node --test) ──"
 for f in packages/shared-ts/test/shared.test.ts \
          services/mcp-gateway/test/gateway.test.ts \
          services/mcp-gateway/test/vault.test.ts \
+         services/mcp-gateway/test/server.test.ts \
+         services/mcp-gateway/test/connect.test.ts \
          services/mcp-servers/github/test/github.test.ts \
          services/mcp-servers/github/test/rest.test.ts \
          services/mcp-servers/scheduler/test/scheduler.test.ts \
