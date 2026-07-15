@@ -185,3 +185,143 @@ test("MCP tools/list surfaces browser/database tools ONLY when the token allows 
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }));
+
+// ================================================================ Scheduler + M365 connectors (§14)
+// ---------------------------------------------------------------- registration + round-trip
+test("scheduler.list_crons round-trips via StubAutomation through the gateway (audit row produced)", withEnv(async () => {
+  const gw = connectorGateway();
+  const before = gw.audit.length;
+  const r = await gw.call({
+    tool: "scheduler.list_crons",
+    args: {},
+    taskJwt: taskJwt({ allowed_tools: ["scheduler.list_crons"] }),
+  });
+  assert.equal(r.status, "ok");
+  assert.match(String(r.result), /job_stub/); // deterministic StubAutomation output
+  assert.equal(gw.audit.length, before + 1);
+  assert.equal(gw.audit.at(-1)?.tool, "scheduler.list_crons");
+  assert.equal(gw.audit.at(-1)?.status, "ok");
+}));
+
+test("scheduler.create_cron threads ctx.userId/orgId and returns a human schedule", withEnv(async () => {
+  const gw = connectorGateway();
+  const r = await gw.call({
+    tool: "scheduler.create_cron",
+    args: {
+      name: "morning", prompt: "résume mes PRs", cron: "0 9 * * 1",
+      delivery: { channel: "slack", target: "U1" },
+      perRunBudget: { maxCostUsd: 0.5, maxSeconds: 120 },
+    },
+    taskJwt: taskJwt({ allowed_tools: ["scheduler.create_cron"] }),
+  });
+  assert.equal(r.status, "ok");
+  assert.match(String(r.result), /chaque lun/); // humanize() ran on the bound per-call ctx
+}));
+
+test("m365.read_mail round-trips via StubM365 through the gateway (audit row produced)", withEnv(async () => {
+  const gw = connectorGateway();
+  const r = await gw.call({
+    tool: "m365.read_mail",
+    args: { id: "m1" },
+    taskJwt: taskJwt({ allowed_tools: ["m365.read_mail"] }),
+  });
+  assert.equal(r.status, "ok");
+  assert.match(String(r.result), /Q3 review/); // deterministic StubM365 output
+  assert.equal(gw.audit.at(-1)?.tool, "m365.read_mail");
+  assert.equal(gw.audit.at(-1)?.status, "ok");
+}));
+
+test("a token NOT allowing a scheduler/m365 tool is denied (E_PERM_TOOL_DENIED)", withEnv(async () => {
+  const gw = connectorGateway();
+  const jwt = taskJwt({ allowed_tools: ["scheduler.list_crons"] }); // m365.read_mail NOT allowed
+  const m = await gw.call({ tool: "m365.read_mail", args: { id: "m1" }, taskJwt: jwt });
+  assert.equal(m.status, "denied");
+  assert.equal(m.code, "E_PERM_TOOL_DENIED");
+  const s = await gw.call({ tool: "scheduler.run_now", args: { jobId: "job_stub" }, taskJwt: jwt });
+  assert.equal(s.status, "denied");
+  assert.equal(s.code, "E_PERM_TOOL_DENIED");
+}));
+
+// ---------------------------------------------------------------- taint reclassification (§17.6) — the crux
+test("m365.read_mail taints the turn; a later m365.send_mail is forced to approval (interactive)", withEnv(async () => {
+  const gw = connectorGateway();
+  const jwt = taskJwt({
+    task_id: "task_m365_taint",
+    allowed_tools: ["m365.read_mail", "m365.send_mail"],
+  });
+  // 1. read_mail ingests an untrusted email body → taints the task (non-empty stringified result).
+  const read = await gw.call({ tool: "m365.read_mail", args: { id: "m1" }, taskJwt: jwt });
+  assert.equal(read.status, "ok");
+  // 2. send_mail (egressClass public) on the now-tainted turn is reclassified BEFORE it runs — forced
+  //    to human approval even though policy allows it, so ingested untrusted content cannot exfil out.
+  const send = await gw.call({
+    tool: "m365.send_mail",
+    args: { to: "x@y.com", subject: "s", body: "b" },
+    taskJwt: jwt,
+  });
+  assert.equal(send.status, "needs_approval");
+  assert.equal(send.code, "E_GUARD_TAINTED_EGRESS");
+}));
+
+test("tainted SCHEDULED run: m365.send_mail fails outright (E_GUARD_TAINTED_EGRESS)", withEnv(async () => {
+  const gw = connectorGateway();
+  const jwt = taskJwt({
+    task_id: "task_m365_taint_sched",
+    origin: "scheduled",
+    allowed_tools: ["m365.list_mail", "m365.send_mail"],
+  });
+  await gw.call({ tool: "m365.list_mail", args: { folder: "inbox" }, taskJwt: jwt }); // taints
+  const send = await gw.call({
+    tool: "m365.send_mail",
+    args: { to: "x@y.com", subject: "s", body: "b" },
+    taskJwt: jwt,
+  });
+  assert.equal(send.status, "denied");
+  assert.equal(send.code, "E_GUARD_TAINTED_EGRESS");
+}));
+
+test("scheduler tools (egress none) are NEVER taint-gated, even after an m365 read taints the turn", withEnv(async () => {
+  const gw = connectorGateway();
+  const jwt = taskJwt({
+    task_id: "task_sched_never_gated",
+    allowed_tools: ["m365.read_mail", "scheduler.list_crons", "scheduler.create_cron"],
+  });
+  await gw.call({ tool: "m365.read_mail", args: { id: "m1" }, taskJwt: jwt }); // taints the turn
+  const list = await gw.call({ tool: "scheduler.list_crons", args: {}, taskJwt: jwt });
+  assert.equal(list.status, "ok"); // egress "none" → not gated
+  const create = await gw.call({
+    tool: "scheduler.create_cron",
+    args: {
+      name: "morning", prompt: "p", cron: "0 9 * * 1",
+      delivery: { channel: "slack", target: "U1" },
+      perRunBudget: { maxCostUsd: 0.5, maxSeconds: 120 },
+    },
+    taskJwt: jwt,
+  });
+  assert.equal(create.status, "ok"); // egress "none" → not gated by taint (policy approval is separate)
+}));
+
+// ---------------------------------------------------------------- MCP tools/list catalog gating
+test("MCP tools/list surfaces scheduler/m365 tools ONLY when the token allows them", withEnv(async () => {
+  const gw = connectorGateway();
+  const server = createGatewayServer(gw);
+  await listen(server);
+  try {
+    const names = await toolsList(server, taskJwt({ allowed_tools: ["scheduler_placeholder", "m365.read_mail", "scheduler.create_cron"] }));
+    assert.deepEqual(names, ["m365_read_mail", "scheduler_create_cron"]);
+
+    const all = await toolsList(server, taskJwt({
+      allowed_tools: [
+        "scheduler.create_cron", "scheduler.list_crons", "scheduler.pause_cron",
+        "scheduler.resume_cron", "scheduler.run_now",
+        "m365.list_mail", "m365.read_mail", "m365.send_mail", "m365.search_files", "m365.create_event",
+      ],
+    }));
+    assert.deepEqual(all, [
+      "m365_create_event", "m365_list_mail", "m365_read_mail", "m365_search_files", "m365_send_mail",
+      "scheduler_create_cron", "scheduler_list_crons", "scheduler_pause_cron", "scheduler_resume_cron", "scheduler_run_now",
+    ]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}));

@@ -131,6 +131,126 @@ export const MCP_TOOLS: McpToolDef[] = [
       required: ["table"],
     },
   },
+  // Scheduler connector (schemas mirror scheduler.ts CronSpec + the jobId-keyed management tools).
+  {
+    name: "scheduler_create_cron",
+    gwTool: "scheduler.create_cron",
+    description: "Create a scheduled automation (5-field cron, min 15-min interval) through the Axone MCP Gateway. Approval-gated by policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Human label for the automation." },
+        prompt: { type: "string", description: "The instruction run on each firing." },
+        cron: { type: "string", description: "5-field cron expression (min hour dom mon dow), no seconds." },
+        timezone: { type: "string", description: "IANA timezone (default UTC)." },
+        delivery: {
+          type: "object",
+          properties: { channel: { type: "string" }, target: { type: "string" } },
+          required: ["channel", "target"],
+        },
+        perRunBudget: {
+          type: "object",
+          properties: { maxCostUsd: { type: "number" }, maxSeconds: { type: "number" } },
+          required: ["maxCostUsd", "maxSeconds"],
+        },
+      },
+      required: ["name", "prompt", "cron", "delivery", "perRunBudget"],
+    },
+  },
+  {
+    name: "scheduler_list_crons",
+    gwTool: "scheduler.list_crons",
+    description: "List the caller's scheduled automations through the Axone MCP Gateway.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "scheduler_pause_cron",
+    gwTool: "scheduler.pause_cron",
+    description: "Pause a scheduled automation by job id through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { jobId: { type: "string" } },
+      required: ["jobId"],
+    },
+  },
+  {
+    name: "scheduler_resume_cron",
+    gwTool: "scheduler.resume_cron",
+    description: "Resume a paused scheduled automation by job id through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { jobId: { type: "string" } },
+      required: ["jobId"],
+    },
+  },
+  {
+    name: "scheduler_run_now",
+    gwTool: "scheduler.run_now",
+    description: "Trigger a scheduled automation immediately by job id through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { jobId: { type: "string" } },
+      required: ["jobId"],
+    },
+  },
+  // M365 / MS Graph connector (schemas mirror m365.ts tools()). Reads ingest untrusted mail/file
+  // content; send_mail is public egress (approval-gated on a tainted turn).
+  {
+    name: "m365_list_mail",
+    gwTool: "m365.list_mail",
+    description: "List messages in an Outlook mail folder (default inbox) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { folder: { type: "string", description: "Mail folder name (default inbox)." } },
+    },
+  },
+  {
+    name: "m365_read_mail",
+    gwTool: "m365.read_mail",
+    description: "Read one Outlook message's subject and body by id through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "Message id." } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "m365_send_mail",
+    gwTool: "m365.send_mail",
+    description: "Send an Outlook email through the Axone MCP Gateway. Public egress — approval-gated on a tainted turn.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Recipient address." },
+        subject: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "m365_search_files",
+    gwTool: "m365.search_files",
+    description: "Search SharePoint / OneDrive files through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string", description: "Search query." } },
+      required: ["query"],
+    },
+  },
+  {
+    name: "m365_create_event",
+    gwTool: "m365.create_event",
+    description: "Create a calendar event through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        start: { type: "string", description: "Event start (ISO 8601)." },
+      },
+      required: ["title", "start"],
+    },
+  },
 ];
 
 // Extract the raw TASK JWT from an Authorization header. Empty string when absent/malformed → the

@@ -7,6 +7,8 @@ import { GithubMcp, StubBackend, type GithubBackend } from "../../mcp-servers/gi
 import { RestBackend } from "../../mcp-servers/github/src/rest.ts";
 import { BrowserMcp, type BrowserBackend } from "../../mcp-servers/browser/src/browser.ts";
 import { DatabaseMcp, type DbBackend } from "../../mcp-servers/database/src/database.ts";
+import { SchedulerMcp, type AutomationBackend, type CronSpec, type JobRef } from "../../mcp-servers/scheduler/src/scheduler.ts";
+import { M365Mcp, type M365Backend } from "../../mcp-servers/m365/src/m365.ts";
 import type { AllowListResolver } from "../../mcp-servers/browser/src/ssrf.ts";
 import { CredentialResolver, InMemoryVault, CredentialMissing } from "./vault.ts";
 import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
@@ -95,6 +97,64 @@ const DB_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }
   "database.describe": { ingestsUntrusted: true, egressClass: "none" },
 };
 
+// Scheduler connector egress metadata (§17.6.2). Every tool reads or mutates the requester's OWN
+// automation config (cron jobs) and returns job metadata only — no message or content ever leaves
+// the trust boundary → egressClass "none" for all five. The results are structured job records the
+// agent itself authored (ids, statuses, schedules), not attacker-influenceable content, so
+// ingestsUntrusted:false — a scheduler call never taints the turn and is never taint-gated. NOTE:
+// scheduler.create_cron is separately require_approval by POLICY (tool_policies → approval_tools in
+// the TASK JWT, §13.3); that human-in-the-loop gate is orthogonal to egress class and is enforced by
+// the gateway's approval check, NOT here. Do not conflate "require_approval policy" with "public egress".
+const SCHED_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "scheduler.create_cron": { ingestsUntrusted: false, egressClass: "none" },
+  "scheduler.list_crons": { ingestsUntrusted: false, egressClass: "none" },
+  "scheduler.pause_cron": { ingestsUntrusted: false, egressClass: "none" },
+  "scheduler.resume_cron": { ingestsUntrusted: false, egressClass: "none" },
+  "scheduler.run_now": { ingestsUntrusted: false, egressClass: "none" },
+};
+
+// M365 / MS Graph connector egress metadata (§17.6.2) — the security-critical classification.
+// READS (list_mail/read_mail/search_files) pull mail bodies, message metadata and SharePoint file
+// content authored by ARBITRARY external senders — attacker-influenceable untrusted content entering
+// the turn → ingestsUntrusted:true. They only read; nothing is sent out → egressClass "none". Reading
+// any of them taints the task, which then gates every later public-egress tool (§17.6.3).
+// send_mail DELIVERS a composed message to recipients OUTSIDE the trust boundary → egressClass
+// "public": on a tainted turn it MUST reclassify (require_approval interactive / E_GUARD_TAINTED_EGRESS
+// scheduled) so exfiltration of ingested untrusted content is blocked; it composes outbound, it does
+// not bring untrusted content in → ingestsUntrusted:false. create_event WRITES to the user's OWN
+// calendar (no external attendee/invite parameter on the backend) — a mutation that stays WITHIN the
+// trust boundary, so egressClass "internal" (not read-only, but nothing leaves); its result is just an
+// event id → ingestsUntrusted:false.
+const M365_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "m365.list_mail": { ingestsUntrusted: true, egressClass: "none" },
+  "m365.read_mail": { ingestsUntrusted: true, egressClass: "none" },
+  "m365.search_files": { ingestsUntrusted: true, egressClass: "none" },
+  "m365.send_mail": { ingestsUntrusted: false, egressClass: "public" },
+  "m365.create_event": { ingestsUntrusted: false, egressClass: "internal" },
+};
+
+// Default keyless Scheduler backend. The M365 connector ships its own StubM365 default, but
+// SchedulerMcp requires an injected AutomationBackend — this deterministic stub keeps the
+// offline/dev/test path keyless (mirrors StubBackend/StubFetch/StubDb) until a real HTTP client to
+// the automation-service is injected via opts.schedulerBackend.
+class StubAutomation implements AutomationBackend {
+  async create(_userId: string, _orgId: string, _spec: CronSpec): Promise<JobRef> {
+    return { jobId: "job_stub", status: "pending_approval", humanSchedule: "" };
+  }
+  async list(): Promise<JobRef[]> {
+    return [{ jobId: "job_stub", status: "active", humanSchedule: "chaque jour à 8h00 (UTC)" }];
+  }
+  async pause(jobId: string): Promise<JobRef> {
+    return { jobId, status: "paused", humanSchedule: "" };
+  }
+  async resume(jobId: string): Promise<JobRef> {
+    return { jobId, status: "active", humanSchedule: "" };
+  }
+  async runNow(_jobId: string): Promise<{ runId: string }> {
+    return { runId: "srun_stub" };
+  }
+}
+
 // Thin adapter (handler-shape bridge): the browser/database connector tools return structured
 // objects (Promise<unknown>), but the gateway's ToolHandler is Promise<string> — it DLP-scrubs the
 // result and uses its length to decide taint. Stringify non-string results so scrub() runs on the
@@ -123,6 +183,11 @@ export function buildGateway(
     browserAllowList?: AllowListResolver;
     // Real read-only Postgres backend (pg.ts) injectable here (default StubDb → offline/keyless).
     dbBackend?: DbBackend;
+    // Real automation-service client injectable here (default StubAutomation → offline/keyless),
+    // mirroring the browserBackend/dbBackend seam.
+    schedulerBackend?: AutomationBackend;
+    // Real MS Graph (OBO) backend injectable here (default StubM365 inside M365Mcp → offline/keyless).
+    m365Backend?: M365Backend;
   } = {},
 ): McpGateway {
   const token = process.env.GITHUB_TOKEN;
@@ -172,6 +237,21 @@ export function buildGateway(
   const dbTools = new DatabaseMcp(opts.dbBackend).tools();
   for (const [name, meta] of Object.entries(DB_META)) {
     gw.register(name, stringifyHandler(dbTools[name]), meta);
+  }
+  // Mount the Scheduler connector (StubAutomation offline default; real AutomationBackend injectable).
+  // SchedulerMcp.tools() binds userId/orgId at build time, but the gateway only knows them per-call
+  // (from the verified TASK JWT). So rebuild the tool map per invocation from ctx.userId/ctx.orgId and
+  // dispatch the named tool — then reuse stringifyHandler so the object result is JSON-stringified for
+  // gw.call's DLP/taint (a scheduler result is job metadata; egress "none" means it is never gated).
+  const scheduler = new SchedulerMcp(opts.schedulerBackend ?? new StubAutomation());
+  for (const [name, meta] of Object.entries(SCHED_META)) {
+    gw.register(name, stringifyHandler((a, ctx) => scheduler.tools(ctx.userId, ctx.orgId)[name](a)), meta);
+  }
+  // Mount the M365 connector (StubM365 offline default inside M365Mcp; real Graph backend injectable).
+  // Its tool handlers already take (args, ctx) with the Ctx { credential, userId } the gateway supplies.
+  const m365Tools = new M365Mcp(opts.m365Backend).tools();
+  for (const [name, meta] of Object.entries(M365_META)) {
+    gw.register(name, stringifyHandler(m365Tools[name]), meta);
   }
   return gw;
 }
