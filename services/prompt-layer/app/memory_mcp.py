@@ -12,8 +12,30 @@ like any tool. Hygiene guards (§9.1.3) block, BEFORE anything is stored:
 from __future__ import annotations
 
 import re
+from typing import Protocol
 
 from .memory import MemoryStore
+
+
+class TaintLedger(Protocol):
+    """Per-task taint flag (§17.6.3). The Gateway sets it (TS side) when a turn ingests untrusted
+    content; the memory writer reads it here to stamp source_trust. In prod both point at the
+    same Redis; the in-memory default keeps the offline path keyless (mirrors the RunsStore seam)."""
+
+    def is_tainted(self, task_id: str) -> bool: ...
+
+
+class InMemoryTaint:
+    """Default TaintLedger — a set. Injected shared-Redis-backed in prod."""
+
+    def __init__(self) -> None:
+        self._t: set[str] = set()
+
+    def is_tainted(self, task_id: str) -> bool:
+        return task_id in self._t
+
+    def taint(self, task_id: str) -> None:
+        self._t.add(task_id)  # monotonic: never clears (§17.6.3)
 
 # Secret shapes (mirror the gateway DLP, §13.5). A hit blocks the memory write.
 _SECRET = re.compile(
@@ -46,22 +68,27 @@ def check_write(content: str) -> None:
 class MemoryMcp:
     """The memory.save/search/update/forget tools (§9.1.1). Audited by the Gateway."""
 
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: MemoryStore, taint: TaintLedger | None = None) -> None:
         self.store = store
+        self.taint = taint or InMemoryTaint()
         self.audit: list[dict] = []
 
     def _log(self, op: str, **kw) -> None:
         # args_hash-style audit (§9.1.1: writes journalized), never the raw secret.
         self.audit.append({"op": op, **kw})
 
-    def save(self, content: str, kind: str, now: float, expires_at: float | None = None) -> dict:
+    def save(self, content: str, kind: str, now: float, expires_at: float | None = None,
+             task_id: str | None = None) -> dict:
         check_write(content)  # hygiene guards first — fail-closed
-        mem = self.store.save(content, kind, now, expires_at=expires_at)
+        # Invariant #9 (§9.1.4): a contaminated turn produces ONLY untrusted memory. The taint is
+        # derived from the task's flag, never inferred from the content — detection isn't a boundary.
+        source_trust = "untrusted" if (task_id and self.taint.is_tainted(task_id)) else "trusted"
+        mem = self.store.save(content, kind, now, expires_at=expires_at, source_trust=source_trust)
         self._log("save", kind=kind, stored=mem is not None,
-                  memory_id=mem.id if mem else None)
+                  memory_id=mem.id if mem else None, source_trust=source_trust)
         if mem is None:
             return {"stored": False, "reason": "duplicate of an existing memory"}
-        return {"stored": True, "memory_id": mem.id}
+        return {"stored": True, "memory_id": mem.id, "source_trust": source_trust}
 
     def search(self, query: str, now: float, kinds: list[str] | None = None) -> dict:
         hits = self.store.search(query, now, kinds=kinds)

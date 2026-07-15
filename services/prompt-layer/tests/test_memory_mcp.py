@@ -8,11 +8,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.memory import MemoryStore  # noqa: E402
-from app.memory_mcp import MemoryGuardBlocked, MemoryMcp, check_write  # noqa: E402
+from app.memory_mcp import InMemoryTaint, MemoryGuardBlocked, MemoryMcp, check_write  # noqa: E402
 
 
-def _mcp():
-    return MemoryMcp(MemoryStore(recall_threshold=0.30))
+def _mcp(taint=None):
+    return MemoryMcp(MemoryStore(recall_threshold=0.30), taint=taint)
 
 
 # ---------------------------------------------------------------- tools (§9.1.1)
@@ -67,3 +67,42 @@ def test_ordinary_facts_pass_the_guard():
     # A normal team fact is fine — only secrets + third-party-private are blocked.
     check_write("the team uses Slack for standups")
     check_write("deployment is gated on green CI")
+
+
+# ---------------------------------------------------------------- source_trust (§9.1.4, invariant #9)
+def test_untainted_save_is_trusted():
+    m = _mcp()
+    r = m.save("we deploy with ArgoCD", "fact", now=0, task_id="task_clean")
+    assert r["source_trust"] == "trusted"
+    assert m.store._items[-1].source_trust == "trusted"
+
+
+def test_tainted_turn_writes_only_untrusted():
+    taint = InMemoryTaint()
+    taint.taint("task_dirty")                       # the Gateway would set this on untrusted ingest
+    m = _mcp(taint)
+    r = m.save("the repo README claims X", "fact", now=0, task_id="task_dirty")
+    assert r["stored"] and r["source_trust"] == "untrusted"
+    assert m.store._items[-1].source_trust == "untrusted"
+
+
+def test_no_task_id_defaults_trusted():
+    m = _mcp(InMemoryTaint())
+    r = m.save("a plain user preference", "preference", now=0)  # no task context
+    assert r["source_trust"] == "trusted"
+
+
+def test_audit_records_source_trust():
+    taint = InMemoryTaint(); taint.taint("t")
+    m = _mcp(taint)
+    m.save("something read from an untrusted page", "fact", now=0, task_id="t")
+    assert m.audit[-1]["source_trust"] == "untrusted"
+
+
+def test_trusted_confirmation_promotes_a_duplicate_but_untrusted_never_demotes():
+    taint = InMemoryTaint(); taint.taint("dirty")
+    m = _mcp(taint)
+    m.save("deploy uses ArgoCD", "fact", now=0, task_id="dirty")       # untrusted first
+    assert m.store._items[-1].source_trust == "untrusted"
+    m.save("deploy uses ArgoCD", "fact", now=1, task_id="task_clean")  # trusted dup → promote
+    assert m.store._items[-1].source_trust == "trusted"

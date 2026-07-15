@@ -3,7 +3,9 @@ name = "prompt-layer"
 version = "0.1.0"
 description = "Axone prompt-layer — classify/plan/guardrails/permissions/routing (instructions.md §9)"
 requires-python = ">=3.10"
-dependencies = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "pydantic>=2.6"]
+# cryptography is used only when TASK_JWT_ALG=ES256 (opt-in TASK JWT signing, §13.4);
+# same library the auth-service uses for RS256. HS256 (default) needs no crypto dep.
+dependencies = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "pydantic>=2.6", "cryptography>=42"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
