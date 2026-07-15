@@ -103,6 +103,20 @@ const GH_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }
   "github.merge_pr": { ingestsUntrusted: false, egressClass: "public" },
 };
 
+// GitHub READ surface (§17.6.2): repo/issue/PR/commit metadata is user-influenced content pulled INTO
+// the turn → ingestsUntrusted:true; all are read-only → egressClass "none" (never taint-gated, but
+// reading them taints the turn, gating any later public-egress tool). Registered via stringifyHandler
+// so the object/array result becomes a JSON string the gateway DLP-scrubs and the MCP client renders.
+const GH_READ_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "github.list_repos": { ingestsUntrusted: true, egressClass: "none" },
+  "github.get_issue": { ingestsUntrusted: true, egressClass: "none" },
+  "github.list_pull_requests": { ingestsUntrusted: true, egressClass: "none" },
+  "github.get_pull_request": { ingestsUntrusted: true, egressClass: "none" },
+  "github.search_repositories": { ingestsUntrusted: true, egressClass: "none" },
+  "github.search_issues": { ingestsUntrusted: true, egressClass: "none" },
+  "github.list_commits": { ingestsUntrusted: true, egressClass: "none" },
+};
+
 // Browser connector egress metadata (§17.6.2). Both tools pull WEB CONTENT — arbitrary untrusted
 // input — into the turn, so ingestsUntrusted:true. egressClass "public" because the URL argument
 // itself is an outbound channel: a fetch to an attacker-controlled host can carry exfiltrated data
@@ -268,11 +282,11 @@ function stringifyHandler(h: (a: any, ctx: any) => Promise<unknown>): ToolHandle
   };
 }
 
-// The GitHub connector becomes REAL with zero code change: set GITHUB_TOKEN and the gateway swaps
-// StubBackend → RestBackend (§ADR-012). The token reaches the tool via the credential resolver (the
-// Vault stand-in, §13.2) — NOT ambient env inside the backend — so it stays a per-request injection
-// on the one egress point, not a shared ambient secret (confused-deputy guard, §3.2). Pass
-// `githubBackend` to inject a fetch-mocked RestBackend in tests (keyless).
+// The GitHub connector is REAL per-user: every call routes on the credential the Vault resolved for
+// THIS caller (§13.2). A real stored OAuth token → RestBackend against api.github.com with THAT token
+// (injected via ctx.credential, never ambient env — confused-deputy guard, §3.2); the "vault:stub"
+// sentinel (no stored token, offline/tests) → StubBackend, so the keyless dev/test path is unchanged.
+// Pass `githubBackend` to inject a fetch-mocked RestBackend in tests (used for every call, keyless).
 export function buildGateway(
   opts: {
     githubBackend?: GithubBackend;
@@ -295,14 +309,19 @@ export function buildGateway(
   } = {},
 ): McpGateway {
   const token = process.env.GITHUB_TOKEN;
-  const backend: GithubBackend = opts.githubBackend ?? (token ? new RestBackend() : new StubBackend());
+  const injected = opts.githubBackend;
+  // Two backends, chosen PER CALL by the resolved credential (see ghTool below): a real Vault token →
+  // RestBackend (api.github.com); the "vault:stub" sentinel → StubBackend. An injected backend (tests)
+  // overrides both and is used for every call.
+  const restBackend: GithubBackend = injected ?? new RestBackend();
+  const stubBackend: GithubBackend = new StubBackend();
   // Preserve today's behavior: if the standalone GITHUB_TOKEN is set, seed it as the org's github
   // service credential so existing github.* calls resolve without an explicit /v1/connect (§ADR-012).
   // Real per-user tokens arrive later via POST /v1/connect → resolver.store.
   if (token) resolver.storeOrg(DEFAULT_ORG, "github", token);
   // Only the pure offline/stub path (no env token, no injected backend) has no real egress — there a
   // missing credential is harmless, so we hand back a sentinel to keep the dev/test chain keyless.
-  const usingStub = !token && !opts.githubBackend;
+  const usingStub = !token && !injected;
   // Real Vault injection (§13.2): the requester's personal token first (Mode A), else the org's
   // service credential (Mode B). A genuine miss throws CredentialMissing → the gateway denies with
   // E_CONN_NEEDS_CONNECTION (fail-closed) — the sandbox never gets a shared/ambient token.
@@ -326,10 +345,24 @@ export function buildGateway(
   };
   const gw = new McpGateway(SECRET, verifyOpts, resolveCredential,
     undefined, buildVerifyToken(verifyOpts));
-  // Mount the real GitHub MCP tool surface (stub or REST behind the same interface).
-  const tools = new GithubMcp(backend).tools();
+  // Mount the real GitHub MCP tool surface. Per-call routing: the resolved credential decides REST vs
+  // stub. An injected backend (tests) is authoritative for every call; otherwise the "vault:stub"
+  // sentinel (no stored token) → StubBackend, a real token → RestBackend against api.github.com.
+  const realTools = new GithubMcp(restBackend).tools();
+  const stubTools = new GithubMcp(stubBackend).tools();
+  const ghTool = (name: string) =>
+    (args: Record<string, unknown>, ctx: { userId: string; orgId: string; credential: string }) => {
+      const real = injected || (!!ctx.credential && ctx.credential !== "vault:stub");
+      return (real ? realTools : stubTools)[name](args, ctx);
+    };
+  // Existing tool surface (write + legacy reads) registered as-is, preserving their result shapes.
   for (const [name, meta] of Object.entries(GH_META)) {
-    gw.register(name, tools[name], meta);
+    gw.register(name, ghTool(name), meta);
+  }
+  // Read surface: stringifyHandler so the object/array result is a JSON string for gw.call's DLP,
+  // taint accounting (raw.length) and the MCP client's text rendering.
+  for (const [name, meta] of Object.entries(GH_READ_META)) {
+    gw.register(name, stringifyHandler(ghTool(name)), meta);
   }
   // Mount the Browser connector (StubFetch offline default; real BrowserBackend injectable). The
   // SSRF gate lives inside BrowserMcp and defaults to deny — pass browserAllowList to permit hosts.

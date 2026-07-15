@@ -11,7 +11,26 @@
 // error, never a silent 200-that-wasn't: 401 -> E_CONN_TOKEN_EXPIRED (reconnect), secondary
 // rate limit / 403 -> E_RATE_LIMITED (back off), 404 -> E_CONN_NEEDS_CONNECTION.
 
-import type { GithubBackend, PullRequest, ToolContext } from "./github.ts";
+import type {
+  Commit, GithubBackend, IssueDetail, IssueRef, PullDetail, PullRef, PullRequest, Repo, ToolContext,
+} from "./github.ts";
+
+// §14 "règles communes": responses truncated to 256 KB. github metadata payloads are small, but a
+// token-holder's repo/commit/search list (or a giant issue/PR body) can still exceed the cap — never
+// hand an over-limit blob to the gateway.
+const MAX_RESPONSE_BYTES = 256 * 1024;
+
+// Drop trailing items until the serialized array fits the 256 KB cap (n <= 30 here, so linear is fine).
+function cap<T>(items: T[]): T[] {
+  let n = items.length;
+  while (n > 0 && Buffer.byteLength(JSON.stringify(items.slice(0, n)), "utf8") > MAX_RESPONSE_BYTES) n--;
+  return n === items.length ? items : items.slice(0, n);
+}
+
+// Hard-cap a single large free-text field (issue/PR body) to the same 256 KB budget.
+function capStr(s: string): string {
+  return Buffer.byteLength(s, "utf8") > MAX_RESPONSE_BYTES ? s.slice(0, MAX_RESPONSE_BYTES) : s;
+}
 
 // A typed error carrying a taxonomy code so the gateway/prompt-layer can map it (§21).
 export class GithubApiError extends Error {
@@ -114,11 +133,57 @@ export class RestBackend implements GithubBackend {
     return { merged: !!data.merged, sha: data.sha ?? "" };
   }
 
-  async listIssues(repo: string, ctx: ToolContext): Promise<Array<{ number: number; title: string }>> {
-    const data = await this.call("GET", `/repos/${RestBackend.repoPath(repo)}/issues?state=open`, ctx);
+  async listIssues(repo: string, ctx: ToolContext, state = "open"): Promise<Array<{ number: number; title: string }>> {
+    const data = await this.call("GET", `/repos/${RestBackend.repoPath(repo)}/issues?state=${encodeURIComponent(state)}`, ctx);
     // The issues endpoint returns PRs too; drop them (real issues have no pull_request field).
     return (data as any[])
       .filter((i) => !i.pull_request)
       .map((i) => ({ number: i.number, title: i.title }));
+  }
+
+  async listRepos(ctx: ToolContext): Promise<Repo[]> {
+    const data = await this.call("GET", `/user/repos?per_page=30&sort=updated`, ctx);
+    return cap((data as any[]).map((r) => ({
+      full_name: r.full_name, private: !!r.private, description: r.description ?? null,
+      updated_at: r.updated_at, html_url: r.html_url,
+    })));
+  }
+
+  async getIssue(repo: string, number: number, ctx: ToolContext): Promise<IssueDetail> {
+    const d = await this.call("GET", `/repos/${RestBackend.repoPath(repo)}/issues/${encodeURIComponent(String(number))}`, ctx);
+    return { number: d.number, title: d.title, state: d.state, html_url: d.html_url,
+      body: capStr(d.body ?? ""), user: d.user?.login ?? "" };
+  }
+
+  async listPullRequests(repo: string, ctx: ToolContext, state = "open"): Promise<PullRef[]> {
+    const d = await this.call("GET", `/repos/${RestBackend.repoPath(repo)}/pulls?state=${encodeURIComponent(state)}&per_page=30`, ctx);
+    return cap((d as any[]).map((p) => ({ number: p.number, title: p.title, state: p.state, html_url: p.html_url })));
+  }
+
+  async getPullRequest(repo: string, number: number, ctx: ToolContext): Promise<PullDetail> {
+    const p = await this.call("GET", `/repos/${RestBackend.repoPath(repo)}/pulls/${encodeURIComponent(String(number))}`, ctx);
+    return { number: p.number, title: p.title, state: p.state, html_url: p.html_url,
+      body: capStr(p.body ?? ""), merged: !!p.merged, head: p.head?.ref ?? "", base: p.base?.ref ?? "" };
+  }
+
+  async searchRepositories(query: string, ctx: ToolContext): Promise<Repo[]> {
+    const d = await this.call("GET", `/search/repositories?q=${encodeURIComponent(query)}&per_page=30`, ctx);
+    return cap((d.items ?? []).map((r: any) => ({
+      full_name: r.full_name, private: !!r.private, description: r.description ?? null,
+      updated_at: r.updated_at, html_url: r.html_url,
+    })));
+  }
+
+  async searchIssues(query: string, ctx: ToolContext): Promise<IssueRef[]> {
+    const d = await this.call("GET", `/search/issues?q=${encodeURIComponent(query)}&per_page=30`, ctx);
+    return cap((d.items ?? []).map((i: any) => ({ number: i.number, title: i.title, state: i.state, html_url: i.html_url })));
+  }
+
+  async listCommits(repo: string, ctx: ToolContext): Promise<Commit[]> {
+    const d = await this.call("GET", `/repos/${RestBackend.repoPath(repo)}/commits?per_page=30`, ctx);
+    return cap((d as any[]).map((c) => ({
+      sha: c.sha, message: c.commit?.message ?? "",
+      author: c.author?.login ?? c.commit?.author?.name ?? "", html_url: c.html_url,
+    })));
   }
 }

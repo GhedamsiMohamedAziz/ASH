@@ -41,8 +41,16 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: "github_list_issues",
     gwTool: "github.list_issues",
-    description: "List issues in a GitHub repository through the Axone MCP Gateway.",
-    inputSchema: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] },
+    description: "List issues in a GitHub repository (owner/repo, optional state) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string", description: "Repository owner (user or org)." },
+        repo: { type: "string", description: "Repository name." },
+        state: { type: "string", enum: ["open", "closed", "all"], description: "Issue state filter (default open)." },
+      },
+      required: ["owner", "repo"],
+    },
   },
   {
     name: "github_create_pr",
@@ -67,6 +75,85 @@ export const MCP_TOOLS: McpToolDef[] = [
       type: "object",
       properties: { repo: { type: "string" }, number: { type: "number" } },
       required: ["repo", "number"],
+    },
+  },
+  // GitHub READ surface (real per-user OAuth token via the Vault). All read-only, egressClass "none".
+  {
+    name: "github_list_repos",
+    gwTool: "github.list_repos",
+    description: "List the authenticated user's repositories (most recently updated first) through the Axone MCP Gateway.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "github_get_issue",
+    gwTool: "github.get_issue",
+    description: "Get a single GitHub issue (title, state, body, author) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        number: { type: "number", description: "Issue number." },
+      },
+      required: ["owner", "repo", "number"],
+    },
+  },
+  {
+    name: "github_list_pull_requests",
+    gwTool: "github.list_pull_requests",
+    description: "List pull requests in a GitHub repository (optional state) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        state: { type: "string", enum: ["open", "closed", "all"], description: "PR state filter (default open)." },
+      },
+      required: ["owner", "repo"],
+    },
+  },
+  {
+    name: "github_get_pull_request",
+    gwTool: "github.get_pull_request",
+    description: "Get a single pull request (title, state, body, head/base, merged) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        number: { type: "number", description: "Pull request number." },
+      },
+      required: ["owner", "repo", "number"],
+    },
+  },
+  {
+    name: "github_search_repositories",
+    gwTool: "github.search_repositories",
+    description: "Search GitHub repositories by query through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { q: { type: "string", description: "GitHub repository search query." } },
+      required: ["q"],
+    },
+  },
+  {
+    name: "github_search_issues",
+    gwTool: "github.search_issues",
+    description: "Search GitHub issues and pull requests by query through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { q: { type: "string", description: "GitHub issue search query." } },
+      required: ["q"],
+    },
+  },
+  {
+    name: "github_list_commits",
+    gwTool: "github.list_commits",
+    description: "List recent commits on a GitHub repository through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { owner: { type: "string" }, repo: { type: "string" } },
+      required: ["owner", "repo"],
     },
   },
   // Browser connector (schemas mirror BrowserMcp.schemas() — a single { url } string input).
