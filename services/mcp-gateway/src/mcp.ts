@@ -251,6 +251,159 @@ export const MCP_TOOLS: McpToolDef[] = [
       required: ["title", "start"],
     },
   },
+  // Slack connector (schemas mirror slack.ts TOOL_SCHEMAS). Reads (read_channel/read_thread/
+  // search_messages) ingest untrusted channel messages; writes (send_message/post_recap/upload_file)
+  // are public egress — approval-gated on a tainted turn.
+  {
+    name: "slack_read_channel",
+    gwTool: "slack.read_channel",
+    description: "Read recent messages from a Slack channel (paginated) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        channel: { type: "string", maxLength: 32, description: "Channel ID, e.g. C0123456789." },
+        pageSize: { type: "number", description: "Messages per page (1-200)." },
+        cursor: { type: "string", description: "Opaque pagination cursor from a previous call." },
+      },
+      required: ["channel"],
+    },
+  },
+  {
+    name: "slack_read_thread",
+    gwTool: "slack.read_thread",
+    description: "Read the replies in a Slack thread (paginated) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        channel: { type: "string", maxLength: 32 },
+        threadTs: { type: "string", maxLength: 32, description: "The parent message's ts." },
+        pageSize: { type: "number" },
+        cursor: { type: "string" },
+      },
+      required: ["channel", "threadTs"],
+    },
+  },
+  {
+    name: "slack_search_messages",
+    gwTool: "slack.search_messages",
+    description: "Search messages across the Slack workspace through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", maxLength: 500 },
+        pageSize: { type: "number" },
+        cursor: { type: "string" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "slack_send_message",
+    gwTool: "slack.send_message",
+    description: "Post a message to a Slack channel through the Axone MCP Gateway. Public egress — approval-gated on a tainted turn.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        channel: { type: "string", maxLength: 32 },
+        text: { type: "string", maxLength: 40000 },
+        threadTs: { type: "string", maxLength: 32, description: "Reply in this thread instead of posting top-level." },
+      },
+      required: ["channel", "text"],
+    },
+  },
+  {
+    name: "slack_post_recap",
+    gwTool: "slack.post_recap",
+    description: "Post a lightweight top-level recap message to a Slack channel through the Axone MCP Gateway. Public egress — approval-gated on a tainted turn.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        channel: { type: "string", maxLength: 32 },
+        text: { type: "string", maxLength: 40000 },
+      },
+      required: ["channel", "text"],
+    },
+  },
+  {
+    name: "slack_upload_file",
+    gwTool: "slack.upload_file",
+    description: "Upload a text file to a Slack channel through the Axone MCP Gateway. Public egress — approval-gated on a tainted turn.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        channel: { type: "string", maxLength: 32 },
+        filename: { type: "string", maxLength: 256 },
+        content: { type: "string", description: "File content (UTF-8 text)." },
+        title: { type: "string", maxLength: 256 },
+      },
+      required: ["channel", "filename", "content"],
+    },
+  },
+  // Notion connector (schemas mirror notion.ts TOOL_SCHEMAS). Reads (search/read_page) ingest untrusted
+  // page content; writes (create_page/update_page) are egress "internal" (org's own workspace) — NOT
+  // taint-gated.
+  {
+    name: "notion_search",
+    gwTool: "notion.search",
+    description: "Search pages visible to the connected Notion integration (paginated) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", maxLength: 500 },
+        pageSize: { type: "number", description: "Pages per page (1-100)." },
+        cursor: { type: "string", description: "Opaque pagination cursor from a previous call." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "notion_read_page",
+    gwTool: "notion.read_page",
+    description: "Read a Notion page's title and content (capped at 256 KB) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { id: { type: "string", maxLength: 100, description: "Notion page ID." } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "notion_create_page",
+    gwTool: "notion.create_page",
+    description: "Create a new Notion page under a parent page through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        parentId: { type: "string", maxLength: 100, description: "Parent page ID the new page is created under." },
+        title: { type: "string", maxLength: 2000 },
+        content: { type: "string", description: "Initial page body (plain text, one paragraph block)." },
+      },
+      required: ["parentId", "title"],
+    },
+  },
+  {
+    name: "notion_update_page",
+    gwTool: "notion.update_page",
+    description: "Rename a Notion page and/or append content to it through the Axone MCP Gateway. At least one of title/appendContent is required.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        id: { type: "string", maxLength: 100 },
+        title: { type: "string", maxLength: 2000, description: "New page title, if renaming." },
+        appendContent: { type: "string", description: "Plain text appended as a new paragraph block." },
+      },
+      required: ["id"],
+    },
+  },
 ];
 
 // Extract the raw TASK JWT from an Authorization header. Empty string when absent/malformed → the

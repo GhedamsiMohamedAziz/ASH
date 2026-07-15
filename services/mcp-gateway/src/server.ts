@@ -9,6 +9,8 @@ import { BrowserMcp, type BrowserBackend } from "../../mcp-servers/browser/src/b
 import { DatabaseMcp, type DbBackend } from "../../mcp-servers/database/src/database.ts";
 import { SchedulerMcp, type AutomationBackend, type CronSpec, type JobRef } from "../../mcp-servers/scheduler/src/scheduler.ts";
 import { M365Mcp, type M365Backend } from "../../mcp-servers/m365/src/m365.ts";
+import { SlackMcp, type SlackBackend } from "../../mcp-servers/slack/src/slack.ts";
+import { NotionMcp, type NotionBackend } from "../../mcp-servers/notion/src/notion.ts";
 import type { AllowListResolver } from "../../mcp-servers/browser/src/ssrf.ts";
 import { CredentialResolver, InMemoryVault, CredentialMissing } from "./vault.ts";
 import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
@@ -133,6 +135,41 @@ const M365_META: Record<string, { ingestsUntrusted: boolean; egressClass: string
   "m365.create_event": { ingestsUntrusted: false, egressClass: "internal" },
 };
 
+// Slack connector egress metadata (§17.6.2). READS (read_channel/read_thread/search_messages) pull
+// channel/DM/thread messages authored by ARBITRARY workspace users — attacker-influenceable untrusted
+// content entering the turn → ingestsUntrusted:true. They only read; nothing is sent out →
+// egressClass "none". Reading any of them taints the task, which then gates every later public-egress
+// tool (§17.6.3). WRITES (send_message/post_recap/upload_file) DELIVER a message or file INTO a Slack
+// channel visible to OTHER people — a genuine exfiltration channel OUTSIDE the agent's own control →
+// egressClass "public": on a tainted turn each MUST reclassify (require_approval interactive /
+// E_GUARD_TAINTED_EGRESS scheduled) so ingested untrusted content cannot be posted out. They compose
+// outbound; they bring no untrusted content in → ingestsUntrusted:false. (Contrast notion.create_page,
+// which writes to the org's OWN workspace and is therefore "internal", not "public": a Slack post lands
+// in front of an audience, a Notion write lands in the org's private store.)
+const SLACK_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "slack.read_channel": { ingestsUntrusted: true, egressClass: "none" },
+  "slack.read_thread": { ingestsUntrusted: true, egressClass: "none" },
+  "slack.search_messages": { ingestsUntrusted: true, egressClass: "none" },
+  "slack.send_message": { ingestsUntrusted: false, egressClass: "public" },
+  "slack.post_recap": { ingestsUntrusted: false, egressClass: "public" },
+  "slack.upload_file": { ingestsUntrusted: false, egressClass: "public" },
+};
+
+// Notion connector egress metadata (§17.6.2). READS (search/read_page) pull page titles/content that
+// is user- or externally-authored — attacker-influenceable untrusted content entering the turn →
+// ingestsUntrusted:true; they only read → egressClass "none", and reading either taints the task.
+// WRITES (create_page/update_page) mutate the org's OWN Notion workspace — a mutation that stays
+// WITHIN the trust boundary (no external recipient, unlike a Slack post that lands in front of other
+// people), so egressClass "internal" (not read-only "none", not external "public"); their result is
+// just a page id/url → ingestsUntrusted:false. Because "internal" is not "public", a create_page /
+// update_page is NEVER taint-gated — a turn tainted by a notion read can still write to Notion.
+const NOTION_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "notion.search": { ingestsUntrusted: true, egressClass: "none" },
+  "notion.read_page": { ingestsUntrusted: true, egressClass: "none" },
+  "notion.create_page": { ingestsUntrusted: false, egressClass: "internal" },
+  "notion.update_page": { ingestsUntrusted: false, egressClass: "internal" },
+};
+
 // Default keyless Scheduler backend. The M365 connector ships its own StubM365 default, but
 // SchedulerMcp requires an injected AutomationBackend — this deterministic stub keeps the
 // offline/dev/test path keyless (mirrors StubBackend/StubFetch/StubDb) until a real HTTP client to
@@ -188,6 +225,10 @@ export function buildGateway(
     schedulerBackend?: AutomationBackend;
     // Real MS Graph (OBO) backend injectable here (default StubM365 inside M365Mcp → offline/keyless).
     m365Backend?: M365Backend;
+    // Real Slack Web API backend injectable here (default StubSlack inside SlackMcp → offline/keyless).
+    slackBackend?: SlackBackend;
+    // Real Notion API backend injectable here (default StubNotion inside NotionMcp → offline/keyless).
+    notionBackend?: NotionBackend;
   } = {},
 ): McpGateway {
   const token = process.env.GITHUB_TOKEN;
@@ -252,6 +293,21 @@ export function buildGateway(
   const m365Tools = new M365Mcp(opts.m365Backend).tools();
   for (const [name, meta] of Object.entries(M365_META)) {
     gw.register(name, stringifyHandler(m365Tools[name]), meta);
+  }
+  // Mount the Slack connector (StubSlack offline default inside SlackMcp; real SlackBackend injectable).
+  // Its tool handlers already take (args, ctx) with the ToolContext { userId, orgId, credential } the
+  // gateway supplies (same shape as M365) — so no per-call rebuild is needed, just stringifyHandler for
+  // gw.call's DLP/taint (a Slack read returns a message object; egress "public" writes are taint-gated).
+  const slackTools = new SlackMcp(opts.slackBackend).tools();
+  for (const [name, meta] of Object.entries(SLACK_META)) {
+    gw.register(name, stringifyHandler(slackTools[name]), meta);
+  }
+  // Mount the Notion connector (StubNotion offline default inside NotionMcp; real NotionBackend injectable).
+  // Same (args, ctx) handler shape as Slack/M365 — stringifyHandler bridges the object result to the
+  // gateway's string ToolHandler for DLP/taint.
+  const notionTools = new NotionMcp(opts.notionBackend).tools();
+  for (const [name, meta] of Object.entries(NOTION_META)) {
+    gw.register(name, stringifyHandler(notionTools[name]), meta);
   }
   return gw;
 }
