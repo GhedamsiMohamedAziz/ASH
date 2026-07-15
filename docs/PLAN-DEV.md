@@ -478,6 +478,8 @@ Faux positifs : allow-list **par org**, chaque exception étant elle-même audit
 
 Chaque serveur = déploiement indépendant (scaling et pannes isolés), MCP en **streamable HTTP**, accessible **uniquement** depuis la Gateway (NetworkPolicy).
 
+> ✅ **Suite de connecteurs livrée + enregistrée (2026-07-15).** **7 connecteurs** tournent et sont **atteignables via la Gateway** avec métadonnées taint §17.6.2 : **GitHub**, **Browser** (anti-SSRF durci, 71 tests), **Database** (read-only, write-guard SQL, 54 tests), **Scheduler** (5 outils), **M365/Graph**, **Slack** (52 tests), **Notion** (45 tests). Chaque outil déclare `ingests_untrusted` + `egress_class`, appliqués uniformément : les **lectures externes** (mail, canaux Slack, pages Notion, web, DB) sont `ingests_untrusted=true` → **contaminent le tour** ; les **sorties visibles hors frontière** (`m365.send_mail`, `slack.send_message/upload_file`, `browser.fetch`, `github.create_pr/merge_pr`) sont `egress_class=public` → **reclassées sur un tour contaminé** (`require_approval` interactif / `E_GUARD_TAINTED_EGRESS` planifié), tandis que les mutations internes (`notion.*` écritures, `m365.create_event`, `scheduler.*`) restent `internal/none`, non gatées. Le modèle d'exfiltration est donc **appliqué de bout en bout sur tous les connecteurs** (gateway **83 tests**). Un `_template` (§14.3) + `docs/connector-onboarding.md` industrialisent l'ajout du suivant. **Reste :** le branchement des vrais backends OAuth (par fournisseur) — les seams sont en place, offline par défaut.
+
 | Serveur | Backend | Identité |
 |---|---|---|
 | **GitHub** | REST + GraphQL | Token OAuth user (ou GitHub App installation token pour lecture org) |
