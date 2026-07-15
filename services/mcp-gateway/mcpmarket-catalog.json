@@ -1,0 +1,34 @@
+[
+  {
+    "id": "linear",
+    "name": "Linear MCP",
+    "description": "Read and manage Linear issues, projects and cycles. List issues, create tickets, update status.",
+    "mcpUrl": "https://mcp.linear.app/mcp",
+    "category": "project-management",
+    "needsAuth": true
+  },
+  {
+    "id": "stripe",
+    "name": "Stripe MCP",
+    "description": "Query Stripe payments, customers, invoices and subscriptions. Create refunds and payment links.",
+    "mcpUrl": "https://mcp.stripe.com/mcp",
+    "category": "payments",
+    "needsAuth": true
+  },
+  {
+    "id": "sentry",
+    "name": "Sentry MCP",
+    "description": "Inspect Sentry errors, issues and performance traces. Search events and resolve issues.",
+    "mcpUrl": "https://mcp.sentry.dev/mcp",
+    "category": "observability",
+    "needsAuth": true
+  },
+  {
+    "id": "weather",
+    "name": "Weather MCP",
+    "description": "Public weather forecast and current conditions by city or coordinates. No credentials required.",
+    "mcpUrl": "https://mcp.weather.example/mcp",
+    "category": "data",
+    "needsAuth": false
+  }
+]
