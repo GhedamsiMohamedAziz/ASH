@@ -30,19 +30,21 @@ const (
 	EvWake      Event = "wake"      // IDLE/HIBERNATED→ACTIVE (new message or cron fire)
 )
 
-// Thresholds are the idle/hibernate/destroy timers. They are injectable so tests
-// can use small values while production uses the §10.1 defaults.
+// Thresholds are the idle/hibernate/destroy/reap timers. They are injectable so
+// tests can use small values while production uses the §10.1 defaults.
 type Thresholds struct {
-	IdleAfter      time.Duration // ACTIVE→IDLE (spec: 10 min)
-	HibernateAfter time.Duration // IDLE→HIBERNATED (spec: 60 min)
-	DestroyAfter   time.Duration // HIBERNATED→DESTROYED (spec: 30 days, volume archived to S3)
+	IdleAfter       time.Duration // ACTIVE→IDLE (spec: 10 min)
+	HibernateAfter  time.Duration // IDLE→HIBERNATED (spec: 60 min)
+	DestroyAfter    time.Duration // HIBERNATED→DESTROYED (spec: 30 days, volume archived to S3)
+	FailedReapAfter time.Duration // FAILED→COLD reap delay: recycle (kill + recreate) a stuck sandbox
 }
 
 // DefaultThresholds encodes the §10.1 production timers.
 var DefaultThresholds = Thresholds{
-	IdleAfter:      10 * time.Minute,
-	HibernateAfter: 60 * time.Minute,
-	DestroyAfter:   30 * 24 * time.Hour,
+	IdleAfter:       10 * time.Minute,
+	HibernateAfter:  60 * time.Minute,
+	DestroyAfter:    30 * 24 * time.Hour,
+	FailedReapAfter: 5 * time.Minute,
 }
 
 // edge is one legal transition; after (when non-nil) gates the move behind an
@@ -207,6 +209,12 @@ func NeedsReplan(t *Task, now time.Time, window time.Duration) bool {
 
 // PriorityQueue is a small ordered dispatch queue keeping interactive tasks ahead
 // of scheduled ones (§10.2). Pop always returns the highest-priority waiting task.
+//
+// It is a standalone, self-contained reference implementation of the §10.2 ordering
+// (proved by TestPriorityQueueDequeueOrder); the running Orchestrator sorts its
+// per-org o.queues slices directly via the same LessTask comparator, so the two can
+// never diverge on ordering. PriorityQueue is intentionally not wired into the
+// runtime — it exists as the canonical, testable ordering spec.
 type PriorityQueue struct{ items []*Task }
 
 // Len reports the number of queued tasks.
