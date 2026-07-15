@@ -11,7 +11,9 @@
 >
 > **2ᵉ passe de correction (✅ 2026-07-15) :** (2b) **seam Redis du TaintLedger implémenté** — `RedisTaint` côté Gateway (`taint.ts`, `SET NX EX 900` monotone) *et* prompt-layer (`redis_taint.py`), tous deux gated par `REDIS_URL`, **in-memory reste le défaut** (offline/keyless intact) ; les deux pointent sur le même Redis en prod (clé `taint:{task_id}`, TTL aligné sur le TASK JWT). Tests : gateway **17/17**, prompt-layer **167**. (7) **type d'identité connecteur rendu** — chip mono dérivé de la table §14 (`identityTypeLabel`, ADR-017-safe : métadonnée statique, pas un statut inventé). (8) **`admin/audit` + `admin/usage` sur données réelles** — lecture `audit_log` / `usage_daily` via `PgStore`, curseur opaque réutilisé, dégradation vide sans `DATABASE_URL` (validé contre un Postgres jetable : **80 passed**).
 >
-> **3ᵉ passe (✅ 2026-07-15) :** (1b) **ES256/JWKS livré comme seam config-gated** — `verifyES256` (shared-ts, `crypto` natif, JWKS + `kid`), mint ES256 côté prompt-layer (`task_jwt.py`), agrément inter-langage prouvé par vecteur de test commis ; **HS256 reste le défaut** (offline). Revue de sécurité : **risque FAIBLE, 0 critique/haut/moyen** (pas de confusion d'algo / downgrade / `alg:none`, fail-closed partout) ; 1 durcissement appliqué (`hasOwnProperty` sur le lookup `kid`). Tests : gateway **20**, shared-ts **12**, prompt-layer **173**. (5c) **les 5 `admin/*` sur données réelles** (voir §3.2). *Reste, non-code :* la rotation JWKS live (rechargement /5 min) est chargée-au-boot pour l'instant ; le round-trip OIDC réel (Entra/Slack) ; l'enveloppe KMS.
+> **3ᵉ passe (✅ 2026-07-15) :** (1b) **ES256/JWKS livré comme seam config-gated** — `verifyES256` (shared-ts, `crypto` natif, JWKS + `kid`), mint ES256 côté prompt-layer (`task_jwt.py`), agrément inter-langage prouvé par vecteur de test commis ; **HS256 reste le défaut** (offline). Revue de sécurité : **risque FAIBLE, 0 critique/haut/moyen** (pas de confusion d'algo / downgrade / `alg:none`, fail-closed partout) ; 1 durcissement appliqué (`hasOwnProperty` sur le lookup `kid`). Tests : gateway **20**, shared-ts **12**, prompt-layer **173**. (5c) **les 5 `admin/*` sur données réelles** (voir §3.2).
+>
+> **4ᵉ passe — plan d'exécution (✅ 2026-07-15) :** (E1) **exécution agentique réelle** contre un vrai `opencode serve` (stub LLM keyless), round-trip d'outil live — voir §4.2 ; (E2) **rotation JWKS live** implémentée (rechargement /5 min, `TASK_JWT_JWKS_RELOAD_SECONDS`, fail-safe : un refresh KO conserve les dernières clés valides) ; (E3) **seam enveloppe KMS** (`KmsProvider`, `LocalKmsProvider` défaut, vrai KMS injectable, format at-rest inchangé) ; (E4) **taint Redis prouvé E2E** cross-langage. *Reste, hors-boîte :* gVisor (`runsc` absent), Gateway-in-the-loop du test opencode, round-trip OIDC réel (Entra/Slack), client KMS cloud réel, egress K8s.
 
 **Écart restant (⚠️ dette de style, non bloquant) :** (6) `xcheck.ts` vérifie le JWT/traceparent, pas les schémas. Le noyau identité/RLS/billing (L4, L5) est conforme.
 
@@ -400,7 +402,7 @@ ENTRYPOINT ["opencode", "serve", "--port", "4096", "--hostname", "0.0.0.0"]
 
 L'agent voit donc dynamiquement la liste d'outils **filtrée pour cet utilisateur et ce tour** (la Gateway ne présente que `allowed_tools`).
 
-**État :** config 🟩 (`sandbox/opencode.json` déclare exactement 1 MCP remote — la Gateway — avec `Bearer {env:TASK_JWT}` ; test Go `TestOpenCodeConfigShape`, `opencode_config_test.go:36` — ⚠️ le test réel s'appelle ainsi, **pas** `TestRealOpenCodeServer`, et il ne lance volontairement **aucun** conteneur) · **lancement conteneur 🟦 bloqué-environnement** (`runner.py` est un consommateur de bus en modes stub/intégré, pas de lancement conteneur) → le tour agentique reste simulé côté runner.
+**État :** config 🟩 (`sandbox/opencode.json` déclare la Gateway en MCP remote `Bearer {env:TASK_JWT}` + le provider `llm-proxy`, `@ai-sdk/openai-compatible` ; test Go `TestOpenCodeConfigShape`, `opencode_config_test.go`). **✅ Exécution réelle (2026-07-15) :** un 3ᵉ mode `runner.py` (activé par `OPENCODE_SERVER_URL`) pilote un vrai `opencode serve` — `POST /session`, `POST /session/{id}/message`, SSE `GET /event`, `abort`, mapping événements → `AgentEvent` (`text.delta`/`thinking`/`tool.call`/`tool.result`/`done`). LLM = **stub llm-proxy keyless** (`openai_compat.py`, `POST /v1/chat/completions` adossé au `StubBackend`, injecte un `tool_call` puis le texte final). Test d'intégration live (`RUN_OPENCODE_IT=1`) : **1 passed** — vrai opencode + stub, round-trip d'outil réel. **⚠️ Reste :** (a) gVisor indisponible ici (`runsc` absent) → process hôte, pas le runtime durci ; (b) le round-trip du test passe par l'outil `glob` **builtin** d'opencode, **pas encore** par un outil MCP de la Gateway (Gateway-in-the-loop = prochaine étape) ; (c) rotation du `TASK_JWT` par tour = redémarrage opencode ou re-lecture `{file:...}` (noté pour l'Orchestrator).
 
 ### 4.3 MCP Gateway (§13)
 
@@ -438,7 +440,7 @@ Sandbox (MCP Client) — tools/call + Bearer TASK_JWT (mTLS)
     "iat": 1783948920, "exp": 1783949820, "jti": "01J8ZK..." } }
 ```
 
-- **Rotation** : 2 clés actives (`current` + `next`), publiées en JWKS avec `kid`. Rollover mensuel automatisé (job Trigger.dev) : `next` devient `current`, une nouvelle `next` est générée, l'ancienne reste vérifiable 24 h. **Zéro redéploiement** — la Gateway recharge le JWKS toutes les 5 min.
+- **Rotation** : 2 clés actives (`current` + `next`), publiées en JWKS avec `kid`. Rollover mensuel automatisé (job Trigger.dev) : `next` devient `current`, une nouvelle `next` est générée, l'ancienne reste vérifiable 24 h. **Zéro redéploiement** — la Gateway recharge le JWKS toutes les 5 min. ✅ **Implémenté (2026-07-15) :** `ReloadingJwks` (`jwks-reload.ts`), intervalle `TASK_JWT_JWKS_RELOAD_SECONDS` (défaut 300, `≤0` = manuel/off), un nouveau `kid` est pris sans redémarrage ; **fail-safe** : un refresh en échec conserve le dernier keyset valide (jamais de keyset vide → jamais de panne fail-closed généralisée).
 - **Révocation d'urgence** : blocklist Redis par `jti` (TTL = `exp` restant), alimentée par `platctl` — pour un sandbox suspecté compromis **en cours de tour**.
 - Rejet si `aud ≠ mcp-gateway`, dérive d'horloge > 30 s, ou `kid` inconnu. **Fail-closed, jamais de fallback.**
 
@@ -468,7 +470,7 @@ Faux positifs : allow-list **par org**, chaque exception étant elle-même audit
    - run **planifié** → échec **`E_GUARD_TAINTED_EGRESS`** — pas d'humain pour valider, **on ne sort pas**.
 4. **Lien mémoire (§9.1.4)** — le même drapeau impose que toute mémoire écrite pendant un tour contaminé le soit en `source_trust = untrusted`.
 
-> ~~**Reste à faire :** pointer le `TaintLedger` du prompt-layer et celui de la Gateway sur le **même Redis**.~~ ✅ **Fait (2026-07-15)** — seam `REDIS_URL` commun aux deux (voir point 2 ci-dessus).
+> ~~**Reste à faire :** pointer le `TaintLedger` du prompt-layer et celui de la Gateway sur le **même Redis**.~~ ✅ **Fait + prouvé E2E (2026-07-15)** — seam `REDIS_URL` commun aux deux ; test d'intégration `test_redis_taint_e2e.py` (vrai `redis-server`) prouve qu'un drapeau posé par le `RedisTaint` **TS** est vu par le `RedisTaint` **Python** et inversement, monotonicité incluse (**3 passed**).
 
 ### 4.5 Serveurs MCP (§14)
 
@@ -674,7 +676,7 @@ Le TASK JWT porte `sub: agent-org@<org_id>` + claim **`on_behalf_of`** ; la Gate
 - `POST /v1/connect` (PAT) + `GET /v1/connections` ; backend-core proxie et `/me` lit **l'état réel**. Vérifié live : PAT → `github` bascule `false → true` ; le token stocké est injecté au prochain appel d'outil.
 - Ordre de résolution : **token perso (Mode A) d'abord, sinon credential de service org (Mode B)**. Un vrai manque → `CredentialMissing` → refus **`E_CONN_NEEDS_CONNECTION`** (fail-closed).
 - **Ce qui a été explicitement écarté** : la fermeture sur `GITHUB_TOKEN` d'environnement (secret ambiant partagé = deputy confus), et le statut de connecteur codé en dur à `false` (mensonge produit).
-- **Reste externe :** l'OAuth navigateur (client_id / secret par fournisseur), et **l'enveloppe KMS** — le chiffrement est réel, mais la clé est **locale/in-process**. 🟦
+- **Reste externe :** l'OAuth navigateur (client_id / secret par fournisseur). ✅ **Enveloppe KMS (seam livré, 2026-07-15) :** `KmsProvider { wrap/unwrap }` — `LocalKmsProvider` par défaut (KEK 32 octets AES-256-GCM enveloppe la data key, offline), vrai KMS cloud (AWS `Encrypt/Decrypt` / GCP) **injectable** au constructeur (`new CredentialResolver(vault, kms)`), à la manière de `BillingProvider`. Format at-rest **inchangé** sous `LocalKms`. **Reste :** le client KMS cloud réel (key-gated). 🟦
 
 ### 5.4 `source_trust` — provenance de confiance des mémoires (§9.1.4) 🟩
 
@@ -994,7 +996,7 @@ Ce ne sont pas des tâches de code, ce sont des **décisions**. Le nouveau `CLAU
 | **Trigger.dev v4** (automatisations) | ✗ interdit | pg-boss / `pg_cron` | Perte des schedules dynamiques multi-tenant, timezones DST, dashboard, replay |
 | **gVisor** (ADR-002, isolation sandbox) | ✗ interdit | user-namespaces / seccomp / microVM | Le niveau d'isolation doit être re-justifié |
 | **Kubernetes** | ✗ interdit | — | ⚠️ **C'est le SEUL enforcement d'egress réel** (`networkpolicy-sandbox.yaml`). Le chemin compose local **ne contraint aucun egress** (J.2.2). L'invariant n°4 est donc **documenté mais non appliqué localement.** |
-| **HashiCorp Vault** | ✗ (aligné) | Enveloppe KMS | Le chiffrement AES-256-GCM est **réel**, mais la **custody est locale/in-process** — l'enveloppe KMS reste à faire 🟦 |
+| **HashiCorp Vault** | ✗ (aligné) | Enveloppe KMS | Chiffrement AES-256-GCM **réel** ; **seam enveloppe KMS livré** (`KmsProvider`, `LocalKms` défaut, KMS cloud injectable — §5.3). Reste : le client KMS cloud réel 🟦 |
 
 **Ces renversements exigent des ADR 021→026** (référencées, non écrites). Tant qu'elles ne le sont pas, **l'Annexe J est la référence d'état, pas la spec**.
 
