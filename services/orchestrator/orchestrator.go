@@ -105,12 +105,7 @@ func (o *Orchestrator) Submit(t *Task) (*Sandbox, error) {
 // (interactive first), then FIFO within a priority (§10.2).
 func (o *Orchestrator) enqueueLocked(t *Task) {
 	q := append(o.queues[t.OrgID], t)
-	sort.SliceStable(q, func(i, j int) bool {
-		if q[i].Priority != q[j].Priority {
-			return q[i].Priority < q[j].Priority
-		}
-		return q[i].enqueuedAt.Before(q[j].enqueuedAt)
-	})
+	sort.SliceStable(q, func(i, j int) bool { return LessTask(q[i], q[j]) })
 	o.queues[t.OrgID] = q
 }
 
@@ -144,7 +139,7 @@ func (o *Orchestrator) StaleScheduled(now time.Time) []*Task {
 	for org, q := range o.queues {
 		kept := q[:0]
 		for _, t := range q {
-			if t.Priority == Scheduled && now.Sub(t.enqueuedAt) > 15*time.Minute {
+			if NeedsReplan(t, now, DefaultReplanWindow) {
 				stale = append(stale, t)
 			} else {
 				kept = append(kept, t)

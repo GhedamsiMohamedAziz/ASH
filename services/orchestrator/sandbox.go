@@ -107,20 +107,26 @@ func (s *Sandbox) Healthcheck(ok bool) State {
 	return s.state
 }
 
-// Sweep applies the idle/hibernate timers (§10.1). Called periodically.
-// idle > 10min → IDLE; idle > 60min → HIBERNATED.
+// Sweep applies the idle/hibernate/destroy timers (§10.1). Called periodically.
+// idle > IdleAfter → IDLE; idle > HibernateAfter → HIBERNATED; dormant >
+// DestroyAfter → DESTROYED (volume archived to S3). Thresholds come from
+// DefaultThresholds so the running machine matches the pure Next() function.
 func (s *Sandbox) Sweep(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idleFor := now.Sub(s.lastActive)
 	switch s.state {
 	case Active:
-		if idleFor > 10*time.Minute {
+		if idleFor > DefaultThresholds.IdleAfter {
 			s.state = Idle
 		}
 	case Idle:
-		if idleFor > 60*time.Minute {
+		if idleFor > DefaultThresholds.HibernateAfter {
 			s.state = Hibernated
+		}
+	case Hibernated:
+		if idleFor > DefaultThresholds.DestroyAfter {
+			s.state = Destroyed
 		}
 	}
 }
