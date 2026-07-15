@@ -56,6 +56,27 @@ class ApprovalDecision(BaseModel):
     decision: Literal["approve", "deny"]
 
 
+class AutomationPatch(BaseModel):
+    """PATCH /api/v1/automations/{job_id} body — only the user-mutable columns of
+    scheduled_jobs (db/migrations/0002_automations.sql). Lifecycle transitions other than
+    active<->paused (e.g. approval, deletion) go through their own routes."""
+    name: str | None = None
+    cron: str | None = None
+    timezone: str | None = None
+    status: Literal["active", "paused"] | None = None
+    monthly_budget_usd: float | None = None
+
+
+class ScheduledRunSubmission(BaseModel):
+    """POST /internal/scheduled-runs body — a Trigger.dev fire, re-injected as a
+    scheduler-channel InboundMessage through the same bus path as POST /messages."""
+    job_id: str
+    user_id: str
+    org_id: str
+    text: str = Field(min_length=1)
+    scheduled_for: str | None = None
+
+
 # ------------------------------------------------------------------ responses
 class Conversation(BaseModel):
     id: str
@@ -84,6 +105,7 @@ class AgentEvent(BaseModel):
     type: AgentEventType
     seq: int
     data: dict[str, Any] = Field(default_factory=dict)
+    ts: int = 0  # wall-clock epoch seconds, stamped by the store at record time (audit uses it)
 
 
 class Page(BaseModel):

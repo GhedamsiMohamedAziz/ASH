@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import time
 from dataclasses import dataclass, field
 
 from olma_shared.idempotency import InMemoryStore
@@ -81,7 +82,7 @@ class Store:
         though the runner produces events out-of-process.
         """
         state = self.conversations[conversation_id]
-        event = AgentEvent(type=etype, seq=state.next_seq(), data=data)
+        event = AgentEvent(type=etype, seq=state.next_seq(), data=data, ts=int(time.time()))
         state.events.append(event)
         for q in list(state.subscribers):
             q.put_nowait(event)

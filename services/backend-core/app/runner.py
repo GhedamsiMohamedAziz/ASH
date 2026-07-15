@@ -23,6 +23,30 @@ from .bus import agent_events_subject, bus, clear_cancel, is_cancelled
 
 PROMPT_LAYER_URL = os.getenv("PROMPT_LAYER_URL")
 LLM_PROXY_URL = os.getenv("LLM_PROXY_URL")
+MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL")
+
+
+def _intended_tool(text: str) -> tuple[str | None, dict]:
+    """Map the user's intent to a concrete tool call (the Orchestrator's job, §10, minimal here).
+    Lets a chat turn actually exercise the governance chain: authz, approval, taint, audit."""
+    t = text.lower()
+    if "merge" in t:
+        return "github.merge_pr", {"repo": "acme/x", "number": 42}
+    if any(w in t for w in ("déploie", "deploy", "ouvre une pr", "create pr", "pull request", "pr ")):
+        return "github.create_pr", {"repo": "acme/x", "head": "fix/login", "base": "main", "title": "déploiement"}
+    if any(w in t for w in ("cherche", "search", "trouve", "find", "recherche")):
+        return "github.search", {"query": "login"}
+    return None, {}
+
+
+def _args_summary(tool: str, args: dict) -> str:
+    if tool == "github.merge_pr":
+        return f"PR #{args.get('number')} sur {args.get('repo')}"
+    if tool == "github.create_pr":
+        return f"{args.get('head')} → {args.get('base')} ({args.get('repo')})"
+    if tool == "github.search":
+        return f"query={args.get('query')}"
+    return ""
 
 
 def start_runner() -> None:
@@ -91,6 +115,30 @@ async def _integrated_turn(conversation_id: str, text: str, org_id: str):
         pr = await http.post(f"{PROMPT_LAYER_URL}/v1/plan", json={"inbound": inbound})
         pr.raise_for_status()  # a non-2xx must raise, not .json()-crash into a silent hang
         plan = pr.json()
+
+        # For an agentic turn, drive the intended tool through the Gateway — REAL authz, approval,
+        # taint and audit (not just the LLM completion). The Gateway is the only egress (§13).
+        gated = False
+        if MCP_GATEWAY_URL and plan.get("class") == "task_agentique":
+            tool, targs = _intended_tool(text)
+            if tool and tool in (plan.get("allowed_tools") or []):
+                summary = _args_summary(tool, targs)
+                await _emit(conversation_id, "agent.tool.call", {"tool": tool, "args_summary": summary})
+                gw = await http.post(f"{MCP_GATEWAY_URL}/v1/tool/call",
+                                     json={"tool": tool, "args": targs, "taskJwt": plan["task_jwt"]})
+                gwr = gw.json()
+                if gwr.get("status") == "needs_approval":
+                    gated = True
+                    # Carry the replay context; the bridge registers the approval + real id (§13.3).
+                    await _emit(conversation_id, "agent.approval.needed", {
+                        "tool": tool, "args_summary": summary,
+                        "user_id": inbound["user_id"], "org_id": org_id, "args": targs,
+                        "allowed_tools": plan.get("allowed_tools") or [],
+                        "approval_tools": plan.get("approval_tools") or []})
+                else:
+                    await _emit(conversation_id, "agent.tool.result", {
+                        "tool": tool, "status": gwr.get("status"),
+                        "result_summary": str(gwr.get("result") or gwr.get("reason") or "")[:80]})
         # A chat_simple turn answers directly; an agentic turn would drive tools via
         # the gateway (that path is the Orchestrator's job, §10). Either way we get a
         # real model-routed completion for the reply.
@@ -102,6 +150,15 @@ async def _integrated_turn(conversation_id: str, text: str, org_id: str):
         })
         cr.raise_for_status()
         comp = cr.json()
+
+        # Memory capture (§9): when the user says "retiens …" / "remember …", best-effort
+        # persist the utterance as a fact via prompt-layer. Failure never breaks the turn.
+        if text.lower().lstrip().startswith(("retiens", "remember")):
+            try:
+                await http.post(f"{PROMPT_LAYER_URL}/internal/memory/save", json={
+                    "content": text, "kind": "fact", "task_id": plan.get("task_id")})
+            except Exception:  # noqa: BLE001 — memory-save is best-effort
+                pass
     meta = {"class": plan.get("class"), "tier": tier, "model": comp.get("model"),
             "usage": comp.get("usage"), "cost_usd": comp.get("cost_usd")}
     return comp.get("text", ""), meta
