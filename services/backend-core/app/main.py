@@ -1009,4 +1009,7 @@ async def webhook_ingress(source: str, request: Request) -> JSONResponse:
         "status": "accepted", "fanned_out": len(to_publish), "suppressed": suppressed})
 
 
+# Real OAuth 2.0 authorization-code flow for connectors (self-contained in oauth.py).
+from .oauth import router as oauth_router  # noqa: E402
+api.include_router(oauth_router)
 app.include_router(api)

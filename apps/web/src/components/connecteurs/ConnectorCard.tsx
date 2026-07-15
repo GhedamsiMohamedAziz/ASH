@@ -90,9 +90,29 @@ export function ConnectorCard({
         </div>
 
         {!connection.connected && !open && (
-          <Button size="sm" variant="outline" className="w-fit" onClick={start}>
-            <Plug className="size-3.5" aria-hidden /> Connecter
-          </Button>
+          <div className="flex flex-col items-start gap-1.5">
+            {/* Primary path: real OAuth. A full-page nav (not fetch) so the provider redirect works;
+                the /start endpoint 302s to the provider, and the callback bounces back to
+                /connecteurs?connected=… where the page shows a toast + re-fetches /me. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              onClick={() => {
+                window.location.href = `/api/v1/connections/${connection.provider}/start`;
+              }}
+            >
+              <Plug className="size-3.5" aria-hidden /> Se connecter avec {connection.label}
+            </Button>
+            {/* Fallback: paste-a-PAT, since OAuth needs a configured provider app (ADR-019). */}
+            <button
+              type="button"
+              onClick={start}
+              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              utiliser un token
+            </button>
+          </div>
         )}
 
         {!connection.connected && open && (
