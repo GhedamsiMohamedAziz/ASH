@@ -42,6 +42,10 @@ OPENCODE_AGENT = os.getenv("OPENCODE_AGENT", "build")
 OPENCODE_TASK_JWT_PATH = os.getenv("OPENCODE_TASK_JWT_PATH")
 OPENCODE_TASK_JWT = os.getenv("TASK_JWT")
 OPENCODE_TURN_TIMEOUT = float(os.getenv("OPENCODE_TURN_TIMEOUT", "120"))
+# After the prompt POST completes, wait at most this long for session.idle / trailing SSE
+# events before ending the drive loop — bounds a delayed/absent session.idle WITHOUT truncating
+# the text.delta stream (deltas arrive right after the POST returns; session.idle after them).
+OPENCODE_IDLE_GRACE = float(os.getenv("OPENCODE_IDLE_GRACE", "8"))
 
 
 class _Cancelled(Exception):
@@ -104,7 +108,12 @@ async def _run_turn(conversation_id: str, task_id: str, text: str, org_id: str =
     # Real agentic turn against a running `opencode serve` (§10, §12). Emits its own
     # text.delta / tool.* / done, so return once it's driven the turn end-to-end.
     if OPENCODE_SERVER_URL:
-        await _opencode_turn(conversation_id, task_id, text, org_id)
+        # Thread the REAL origin (§17.6.3) into the OpenCode path too — not just conversation/task.
+        # Dropping channel/untrusted/user_id here is the residual webhook-exfil hole: the OpenCode
+        # turn would present the STATIC env TASK_JWT (fixed origin/task_id, never tainted), so an
+        # injected webhook turn runs untainted and the gateway's egress gate never fires.
+        await _opencode_turn(conversation_id, task_id, text, org_id,
+                             channel=channel, untrusted=untrusted, user_id=user_id)
         return
 
     integrated = bool(PROMPT_LAYER_URL and LLM_PROXY_URL)
@@ -226,20 +235,53 @@ async def _integrated_turn(conversation_id: str, text: str, org_id: str,
 # ---------------------------------------------------------------------------
 
 
-def _write_task_jwt() -> None:
-    """Write TASK_JWT to the tmpfs path the gateway-auth config reads (§11.2, §13).
+def _write_task_jwt(jwt: str | None = None) -> None:
+    """Write the TASK JWT to the tmpfs path the gateway-auth config reads (§11.2, §13).
 
     OpenCode presents this JWT to the MCP Gateway per turn; the Orchestrator mounts it into
     a tmpfs (never an env var on disk). Best-effort: a missing path/JWT just means no write.
+
+    `jwt` is the per-turn JWT minted hot by the prompt-layer for THIS turn (correct task_id +
+    origin + pre-taint, §17.6.3). When None (offline dev/CI, no PROMPT_LAYER_URL), fall back to
+    the static env TASK_JWT — the legacy path that keeps current tests/offline runs working.
     """
-    if not (OPENCODE_TASK_JWT_PATH and OPENCODE_TASK_JWT):
+    value = jwt or OPENCODE_TASK_JWT
+    if not (OPENCODE_TASK_JWT_PATH and value):
         return
     try:
         p = Path(OPENCODE_TASK_JWT_PATH)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(OPENCODE_TASK_JWT)
+        p.write_text(value)
     except OSError:
         pass  # tmpfs not present in this environment — the turn still runs (gateway may 401)
+
+
+async def _opencode_task_jwt(conversation_id: str, text: str, org_id: str,
+                             channel: str, untrusted: bool, user_id: str) -> str | None:
+    """Mint a per-turn TASK JWT via the prompt-layer /v1/plan (§17.6.3, "le TASK JWT est frappé
+    à chaud par le Prompt Layer au moment du run").
+
+    The static env TASK_JWT is minted ONCE with a fixed origin/task_id, so every OpenCode turn —
+    including a webhook-injected one — presents the gateway the SAME identity, which is never
+    tainted; `github.create_pr`/`slack.send_message`/… (egressClass=public) are then NOT
+    reclassified to E_GUARD_TAINTED_EGRESS and exfiltration proceeds. Calling /v1/plan here mints
+    a JWT carrying THIS turn's task_id + origin (scheduled for a webhook turn) and triggers
+    build_task's pre-taint `taint.taint(tid)` on that task_id, so the gateway's egress gate fires.
+
+    NOTE (ADR-012 seam): the prompt-layer taint ledger and the gateway taint ledger are the same
+    store only when REDIS_URL is set for BOTH processes. This mints + pre-taints the per-turn
+    task_id; the deployment must wire a shared REDIS_URL so the gateway's isTainted() sees it.
+    """
+    import httpx
+
+    # Same inbound shape /v1/plan gets on the integrated path — real channel/untrusted/user_id.
+    inbound = {"message_id": "m", "user_id": user_id, "org_id": org_id,
+               "conversation_id": conversation_id, "channel": channel,
+               "untrusted": untrusted, "text": text}
+    async with httpx.AsyncClient(timeout=10) as http:
+        pr = await http.post(f"{PROMPT_LAYER_URL}/v1/plan", json={"inbound": inbound})
+        pr.raise_for_status()  # a non-2xx must raise (fail closed) rather than run untainted
+        return pr.json().get("task_jwt")
 
 
 def _short_args(args) -> str:
@@ -248,13 +290,24 @@ def _short_args(args) -> str:
     return ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])[:80]
 
 
-async def _opencode_turn(conversation_id: str, task_id: str, text: str, org_id: str) -> None:
+async def _opencode_turn(conversation_id: str, task_id: str, text: str, org_id: str,
+                         channel: str = "web", untrusted: bool = False,
+                         user_id: str = "usr_dev") -> None:
     """Drive one real turn through `opencode serve`, mapping its events to AgentEvents."""
     import httpx
 
     base = OPENCODE_SERVER_URL.rstrip("/")
-    _write_task_jwt()
     try:
+        # Per-turn TASK JWT (§17.6.3): when the pipeline is reachable, mint the JWT hot via
+        # /v1/plan so it carries THIS turn's task_id + origin + pre-taint, then hand THAT to
+        # OpenCode. Offline (no PROMPT_LAYER_URL) we fall back to the static env TASK_JWT so
+        # current tests/offline runs still work. A /v1/plan failure while configured raises here
+        # and is caught below (E_TOOL_UPSTREAM_ERROR) — fail closed, never run untainted.
+        task_jwt = None
+        if PROMPT_LAYER_URL:
+            task_jwt = await _opencode_task_jwt(conversation_id, text, org_id,
+                                                channel, untrusted, user_id)
+        _write_task_jwt(task_jwt)
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None)) as http:
             sr = await http.post(f"{base}/session", json={"title": f"turn:{task_id}"})
             sr.raise_for_status()
@@ -297,8 +350,21 @@ async def _opencode_drive(http, base: str, session_id: str, conversation_id: str
     async with http.stream("GET", f"{base}/event",
                            headers={"accept": "text/event-stream"}) as es:
         prompt_task = asyncio.create_task(_opencode_prompt(http, base, session_id, text))
+        lines = es.aiter_lines()
         try:
-            async for line in es.aiter_lines():
+            while True:
+                # session.idle is the terminal and arrives AFTER all message.part.delta events, so
+                # we must NOT break the instant the prompt POST returns (that truncates the delta
+                # stream). Stream freely until the prompt completes; then wait only a short grace
+                # for session.idle / trailing events — bounding a delayed/absent session.idle
+                # without burning the full turn timeout or dropping deltas.
+                try:
+                    if prompt_task.done():
+                        line = await asyncio.wait_for(lines.__anext__(), timeout=OPENCODE_IDLE_GRACE)
+                    else:
+                        line = await lines.__anext__()
+                except (asyncio.TimeoutError, StopAsyncIteration):
+                    break
                 line = line.strip()
                 if not line.startswith("data:"):
                     continue
@@ -337,16 +403,10 @@ async def _opencode_drive(http, base: str, session_id: str, conversation_id: str
                 elif etype == "session.idle":
                     # Terminal ONLY for this session — an idle carrying a missing/foreign
                     # sessionID must not end another turn's drive loop (the generic filter above
-                    # lets sid=None through, so guard the terminal explicitly).
+                    # lets sid=None through, so guard the terminal explicitly). The bounded grace
+                    # above (once prompt_task.done()) handles a delayed/absent session.idle.
                     if sid == session_id:
                         break
-
-                # The prompt POST completed: its awaited result is the authoritative reply +
-                # usage, so stop waiting on events — whether it SUCCEEDED (don't burn the turn
-                # timeout waiting for a session.idle that already effectively happened, which
-                # otherwise mislabels success as E_TOOL_UPSTREAM_ERROR) or FAILED (4xx/transport).
-                if prompt_task.done():
-                    break
         finally:
             if not prompt_task.done():
                 prompt_task.cancel()
