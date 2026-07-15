@@ -160,6 +160,34 @@ def test_internal_scheduled_runs_accepts_valid_service_token_and_publishes(clien
     assert published["conversation_id"] == "cron_job_1"
 
 
+# --------------------------------------------------------------- /internal/automations (create)
+def test_internal_create_automation_rejects_user_jwt(client):
+    r = client.post("/internal/automations",
+                    json={"user_id": "usr_1", "org_id": "org_1", "name": "n",
+                          "prompt": "p", "cron": "0 9 * * *"},
+                    headers=_bearer("usr_1", "org_1"))
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "E_PERM_TOOL_DENIED"
+
+
+def test_internal_create_automation_rejects_missing_token(client):
+    r = client.post("/internal/automations",
+                    json={"user_id": "usr_1", "org_id": "org_1", "name": "n",
+                          "prompt": "p", "cron": "0 9 * * *"})
+    assert r.status_code == 403
+
+
+def test_internal_create_automation_503_without_database(client, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main, "INTERNAL_SERVICE_TOKEN", "s3cr3t")
+    r = client.post("/internal/automations",
+                    json={"user_id": "usr_1", "org_id": "org_1", "name": "n",
+                          "prompt": "p", "cron": "0 9 * * *"},
+                    headers={"X-Service-Token": "s3cr3t"})
+    # No DATABASE_URL in the offline suite → honest 503, never a fabricated row.
+    assert r.status_code == 503
+
+
 # --------------------------------------------------------------- owner scoping (live Postgres)
 @pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="requires DATABASE_URL (live Postgres)")
 def test_automations_list_is_owner_scoped():

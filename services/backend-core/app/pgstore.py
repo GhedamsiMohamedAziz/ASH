@@ -124,6 +124,26 @@ class PgStore:
             )
         return tag.split()[-1] != "0"
 
+    async def create_scheduled_job(self, job: dict) -> dict:
+        """Insert a scheduled_jobs row (§16.1, 0002) — the agent's Scheduler MCP create_cron
+        persists here so a created cron shows up in GET /api/v1/automations. delivery/per_run_budget
+        are JSONB; created_by/status default to 'user'/'active' unless the caller overrides them.
+        Returns the inserted row (self._JOB_COLUMNS projection) for the caller's JobRef."""
+        async with self._acquire(job.get("org_id")) as con:
+            row = await con.fetchrow(
+                """INSERT INTO scheduled_jobs
+                   (id, user_id, org_id, name, prompt, cron, timezone, delivery, per_run_budget,
+                    monthly_budget_usd, created_by, status)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12)
+                   RETURNING """ + self._JOB_COLUMNS,
+                job["id"], job["user_id"], job["org_id"], job["name"], job["prompt"], job["cron"],
+                job.get("timezone", "UTC"),
+                json.dumps(job.get("delivery") or {}), json.dumps(job.get("per_run_budget") or {}),
+                job.get("monthly_budget_usd"),
+                job.get("created_by", "user"), job.get("status", "active"),
+            )
+        return dict(row)
+
     async def list_scheduled_runs(self, job_id: str) -> list[dict]:
         async with self._pool.acquire() as con:
             rows = await con.fetch(

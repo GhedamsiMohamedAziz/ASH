@@ -8,8 +8,10 @@ Foundry backend drops in behind this same interface — production selects it vi
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+import json
+import os
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
 from .models import ChatMessage
 from .pricing import token_estimate
@@ -24,18 +26,42 @@ class BackendResult:
     text: str
     tokens_in: int
     tokens_out: int
+    # Anthropic stop_reason + raw content blocks for the tool-use loop (§12). Default to a plain
+    # end_turn text block so the classic single-shot path (and every existing caller) is unchanged.
+    stop_reason: str | None = None
+    blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 @runtime_checkable
 class Backend(Protocol):
     name: str
 
-    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int) -> BackendResult:
+    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int,
+                 tools: list[dict[str, Any]] | None = None) -> BackendResult:
         ...
 
 
+def _content_text(content: str | list[dict[str, Any]]) -> str:
+    """Flatten a message's content to text for token estimation. A block list is JSON-serialized
+    so tool_use/tool_result payloads still contribute a stable, reproducible length."""
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False)
+
+
 def _prompt_text(messages: list[ChatMessage]) -> str:
-    return "\n".join(f"{m.role}: {m.content}" for m in messages)
+    return "\n".join(f"{m.role}: {_content_text(m.content)}" for m in messages)
+
+
+def _has_tool_result(messages: list[ChatMessage]) -> bool:
+    """True once a tool_result block has been fed back in — the stub uses it to end its scripted
+    loop after one tool call so offline tool-use tests terminate deterministically."""
+    for m in messages:
+        if isinstance(m.content, list):
+            for block in m.content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    return True
+    return False
 
 
 class StubBackend:
@@ -47,12 +73,33 @@ class StubBackend:
 
     name = "stub"
 
-    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int) -> BackendResult:
+    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int,
+                 tools: list[dict[str, Any]] | None = None) -> BackendResult:
         prompt = _prompt_text(messages)
         tokens_in = token_estimate(prompt)
+
+        # Scripted tool-use path (§12): when tools are offered, no tool_result has come back yet,
+        # and LLM_PROXY_STUB_TOOL is configured, emit ONE tool_use block so the offline/keyless
+        # test path exercises the runner's real loop without a provider. The env value names the
+        # tool (MCP underscore name); it must be one of the offered tools, else the first is used.
+        stub_tool = os.environ.get("LLM_PROXY_STUB_TOOL")
+        if tools and stub_tool and not _has_tool_result(messages):
+            offered = {t.get("name") for t in tools}
+            name = stub_tool if stub_tool in offered else next(iter(offered), stub_tool)
+            block = {"type": "tool_use", "id": "toolu_stub", "name": name, "input": {}}
+            text_out = f"[stub:{model}] calling {name}"
+            return BackendResult(
+                text="", tokens_in=tokens_in,
+                tokens_out=min(max_tokens, token_estimate(text_out)),
+                stop_reason="tool_use", blocks=[block],
+            )
+
         text = f"[stub:{model}] echo: {prompt[:200]}"
         tokens_out = min(max_tokens, token_estimate(text))
-        return BackendResult(text=text, tokens_in=tokens_in, tokens_out=tokens_out)
+        return BackendResult(
+            text=text, tokens_in=tokens_in, tokens_out=tokens_out,
+            stop_reason="end_turn", blocks=[{"type": "text", "text": text}],
+        )
 
 
 class FailingBackend:
@@ -60,7 +107,8 @@ class FailingBackend:
 
     name = "failing"
 
-    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int) -> BackendResult:
+    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int,
+                 tools: list[dict[str, Any]] | None = None) -> BackendResult:
         raise BackendError(f"simulated failure for model {model!r}")
 
 
@@ -109,12 +157,17 @@ class AnthropicBackend:
         system = "\n\n".join(system_parts) if system_parts else None
         return system, turns
 
-    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int) -> BackendResult:
+    def complete(self, *, model: str, messages: list[ChatMessage], max_tokens: int,
+                 tools: list[dict[str, Any]] | None = None) -> BackendResult:
         client = self._get_client().with_options(timeout=self._timeout)
         system, turns = self._split(messages)
         kwargs: dict = {"model": model, "max_tokens": max_tokens, "messages": turns}
         if system is not None:
             kwargs["system"] = system
+        # Tool-use loop (§12): hand the Anthropic tool schema to the model so it can emit tool_use
+        # blocks. Absent → a plain text completion, byte-identical to before.
+        if tools:
+            kwargs["tools"] = tools
 
         try:
             if max_tokens > self._stream_over_tokens:
@@ -127,15 +180,28 @@ class AnthropicBackend:
             # Covers anthropic.APIError (auth/rate-limit/timeout/5xx) and transport errors.
             raise BackendError(f"anthropic backend failed for model {model!r}: {err}") from err
 
-        text = "".join(
-            getattr(block, "text", "") for block in resp.content
-            if getattr(block, "type", None) == "text"
-        )
+        # Serialize the assistant's content blocks to plain dicts so the tool-use loop can thread
+        # them back verbatim: text blocks flatten to `text`, tool_use blocks carry id/name/input.
+        blocks: list[dict[str, Any]] = []
+        for block in resp.content:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                blocks.append({"type": "text", "text": getattr(block, "text", "")})
+            elif btype == "tool_use":
+                blocks.append({
+                    "type": "tool_use",
+                    "id": getattr(block, "id", ""),
+                    "name": getattr(block, "name", ""),
+                    "input": getattr(block, "input", {}) or {},
+                })
+        text = "".join(b["text"] for b in blocks if b["type"] == "text")
         usage = resp.usage
         return BackendResult(
             text=text,
             tokens_in=int(getattr(usage, "input_tokens", 0) or 0),
             tokens_out=int(getattr(usage, "output_tokens", 0) or 0),
+            stop_reason=getattr(resp, "stop_reason", None),
+            blocks=blocks,
         )
 
 

@@ -47,32 +47,15 @@ OPENCODE_TURN_TIMEOUT = float(os.getenv("OPENCODE_TURN_TIMEOUT", "120"))
 # the text.delta stream (deltas arrive right after the POST returns; session.idle after them).
 OPENCODE_IDLE_GRACE = float(os.getenv("OPENCODE_IDLE_GRACE", "8"))
 
+# Real tool-use loop (§10, §12). An AGENTIC-class turn (plan.class != chat_simple) drives the model
+# in a loop: the model emits tool_use blocks, the runner executes each via the Gateway, feeds the
+# result back, and repeats until the model returns a final answer (or hits the iteration cap).
+AGENTIC_MAX_ITERS = int(os.getenv("RUNNER_AGENTIC_MAX_ITERS", "6"))
+AGENTIC_MAX_TOKENS = int(os.getenv("RUNNER_AGENTIC_MAX_TOKENS", "1024"))
+
 
 class _Cancelled(Exception):
     """The user cancelled mid-turn; unwinds the OpenCode drive loop to emit E_CANCELLED."""
-
-
-def _intended_tool(text: str) -> tuple[str | None, dict]:
-    """Map the user's intent to a concrete tool call (the Orchestrator's job, §10, minimal here).
-    Lets a chat turn actually exercise the governance chain: authz, approval, taint, audit."""
-    t = text.lower()
-    if "merge" in t:
-        return "github.merge_pr", {"repo": "acme/x", "number": 42}
-    if any(w in t for w in ("déploie", "deploy", "ouvre une pr", "create pr", "pull request", "pr ")):
-        return "github.create_pr", {"repo": "acme/x", "head": "fix/login", "base": "main", "title": "déploiement"}
-    if any(w in t for w in ("cherche", "search", "trouve", "find", "recherche")):
-        return "github.search", {"query": "login"}
-    return None, {}
-
-
-def _args_summary(tool: str, args: dict) -> str:
-    if tool == "github.merge_pr":
-        return f"PR #{args.get('number')} sur {args.get('repo')}"
-    if tool == "github.create_pr":
-        return f"{args.get('head')} → {args.get('base')} ({args.get('repo')})"
-    if tool == "github.search":
-        return f"query={args.get('query')}"
-    return ""
 
 
 def start_runner() -> None:
@@ -121,6 +104,9 @@ async def _run_turn(conversation_id: str, task_id: str, text: str, org_id: str =
         try:
             reply, meta = await _integrated_turn(conversation_id, text, org_id,
                                                  channel, untrusted, user_id)
+        except _Cancelled:
+            # The agentic loop was cancelled mid-turn; E_CANCELLED was already emitted there.
+            return
         except Exception as exc:  # noqa: BLE001 — a turn must ALWAYS terminate the WS (§21)
             # prompt-layer or llm-proxy down/timeout/non-2xx: emit a terminal error + done so
             # the client never hangs. (str(exc) is backend-internal, no user secret; truncated.)
@@ -164,67 +150,19 @@ async def _integrated_turn(conversation_id: str, text: str, org_id: str,
     inbound = {"message_id": "m", "user_id": user_id, "org_id": org_id,
                "conversation_id": conversation_id, "channel": channel,
                "untrusted": untrusted, "text": text}
-    async with httpx.AsyncClient(timeout=10) as http:
+    async with httpx.AsyncClient(timeout=60) as http:
         pr = await http.post(f"{PROMPT_LAYER_URL}/v1/plan", json={"inbound": inbound})
         pr.raise_for_status()  # a non-2xx must raise, not .json()-crash into a silent hang
         plan = pr.json()
 
-        # For an agentic turn, drive the intended tool through the Gateway — REAL authz, approval,
-        # taint and audit (not just the LLM completion). The Gateway is the only egress (§13).
-        gated = False
-        if MCP_GATEWAY_URL and plan.get("class") == "task_agentique":
-            tool, targs = _intended_tool(text)
-            if tool and tool in (plan.get("allowed_tools") or []):
-                summary = _args_summary(tool, targs)
-                await _emit(conversation_id, "agent.tool.call", {"tool": tool, "args_summary": summary})
-                gw = await http.post(f"{MCP_GATEWAY_URL}/v1/tool/call",
-                                     json={"tool": tool, "args": targs, "taskJwt": plan["task_jwt"]})
-                gwr = gw.json()
-                if gwr.get("status") == "needs_approval":
-                    gated = True
-                    # Carry the replay context; the bridge registers the approval + real id (§13.3).
-                    await _emit(conversation_id, "agent.approval.needed", {
-                        "tool": tool, "args_summary": summary,
-                        "user_id": inbound["user_id"], "org_id": org_id, "args": targs,
-                        "allowed_tools": plan.get("allowed_tools") or [],
-                        "approval_tools": plan.get("approval_tools") or []})
-                else:
-                    await _emit(conversation_id, "agent.tool.result", {
-                        "tool": tool, "status": gwr.get("status"),
-                        "result_summary": str(gwr.get("result") or gwr.get("reason") or "")[:80]})
-        # A chat_simple turn answers directly; an agentic turn would drive tools via
-        # the gateway (that path is the Orchestrator's job, §10). Either way we get a
-        # real model-routed completion for the reply.
-        tier = "eco" if plan.get("class") == "chat_simple" else "frontier"
-        await _emit(conversation_id, "agent.tool.call",
-                    {"tool": "llm.complete", "args_summary": f"tier={tier}"})
-        # Give the model its real identity + the ACTUAL tools the pipeline authorized for this
-        # user/turn (allowed_tools/approval_tools are computed by permissions, §9.4 — not invented),
-        # so it answers as the Axone agent and can enumerate its real tools instead of "plain Claude".
         allowed = plan.get("allowed_tools") or []
         approval = plan.get("approval_tools") or []
         profile = plan.get("agent_profile") or "generalist"
-        sys_prompt = (
-            f"Tu es l'agent Axone de l'organisation « {org_id} » (profil : {profile}). "
-            "Tu opères via une MCP Gateway qui filtre, pour cet utilisateur et ce tour, les outils "
-            "auxquels tu as accès. "
-            + (f"Outils (MCP) actuellement disponibles pour toi : {', '.join(allowed)}. "
-               if allowed else "Aucun outil n'est disponible pour ce tour. ")
-            + (f"Outils nécessitant une approbation humaine avant exécution : {', '.join(approval)}. "
-               if approval else "")
-            + "Tu peux aussi créer et gérer des automatisations planifiées (crons) pour l'utilisateur. "
-            "Quand on te demande tes outils, tes MCP ou tes connecteurs, énumère précisément la liste "
-            "ci-dessus — ne prétends jamais n'avoir aucun outil. Réponds dans la langue de l'utilisateur "
-            "(français par défaut), de façon concise et utile."
-        )
-        cr = await http.post(f"{LLM_PROXY_URL}/v1/complete", json={
-            "tier": tier,
-            "messages": [{"role": "system", "content": sys_prompt},
-                         {"role": "user", "content": text}],
-            "org_id": org_id,
-        })
-        cr.raise_for_status()
-        comp = cr.json()
+        klass = plan.get("class")
+        # Give the model its real identity + the ACTUAL tools the pipeline authorized for this
+        # user/turn (allowed_tools/approval_tools are computed by permissions, §9.4 — not invented),
+        # so it answers as the Axone agent and can enumerate its real tools instead of "plain Claude".
+        sys_prompt = _sys_prompt(org_id, profile, allowed, approval)
 
         # Memory capture (§9): when the user says "retiens …" / "remember …", best-effort
         # persist the utterance as a fact via prompt-layer. Failure never breaks the turn.
@@ -234,9 +172,153 @@ async def _integrated_turn(conversation_id: str, text: str, org_id: str,
                     "content": text, "kind": "fact", "task_id": plan.get("task_id")})
             except Exception:  # noqa: BLE001 — memory-save is best-effort
                 pass
-    meta = {"class": plan.get("class"), "tier": tier, "model": comp.get("model"),
+
+        # An AGENTIC-class turn (class != chat_simple) runs a REAL tool-use loop through the
+        # Gateway when the pipeline authorized tools and a Gateway is configured. Otherwise
+        # (chat_simple, or no tools/Gateway) it is a single system-prompted completion — the
+        # unchanged §9.5 path.
+        if klass != "chat_simple" and MCP_GATEWAY_URL and allowed:
+            tool_defs, name_map = await _fetch_tool_defs(http, plan["task_jwt"], allowed)
+            if tool_defs:
+                return await _agentic_loop(http, conversation_id, plan, sys_prompt, text,
+                                           org_id, user_id, tool_defs, name_map)
+
+        tier = "eco" if klass == "chat_simple" else "frontier"
+        await _emit(conversation_id, "agent.tool.call",
+                    {"tool": "llm.complete", "args_summary": f"tier={tier}"})
+        cr = await http.post(f"{LLM_PROXY_URL}/v1/complete", json={
+            "tier": tier,
+            "messages": [{"role": "system", "content": sys_prompt},
+                         {"role": "user", "content": text}],
+            "org_id": org_id,
+        })
+        cr.raise_for_status()
+        comp = cr.json()
+    meta = {"class": klass, "tier": tier, "model": comp.get("model"),
             "usage": comp.get("usage"), "cost_usd": comp.get("cost_usd")}
     return comp.get("text", ""), meta
+
+
+def _sys_prompt(org_id: str, profile: str, allowed: list[str], approval: list[str]) -> str:
+    """The Axone agent's system prompt: its identity + the REAL tools authorized for this turn."""
+    return (
+        f"Tu es l'agent Axone de l'organisation « {org_id} » (profil : {profile}). "
+        "Tu opères via une MCP Gateway qui filtre, pour cet utilisateur et ce tour, les outils "
+        "auxquels tu as accès. "
+        + (f"Outils (MCP) actuellement disponibles pour toi : {', '.join(allowed)}. "
+           if allowed else "Aucun outil n'est disponible pour ce tour. ")
+        + (f"Outils nécessitant une approbation humaine avant exécution : {', '.join(approval)}. "
+           if approval else "")
+        + "Tu peux aussi créer et gérer des automatisations planifiées (crons) pour l'utilisateur. "
+        "Quand un outil peut répondre à la demande, APPELLE-LE réellement au lieu de décrire ce que "
+        "tu ferais ; fonde ta réponse finale sur les résultats des outils. "
+        "Quand on te demande tes outils, tes MCP ou tes connecteurs, énumère précisément la liste "
+        "ci-dessus — ne prétends jamais n'avoir aucun outil. Réponds dans la langue de l'utilisateur "
+        "(français par défaut), de façon concise et utile."
+    )
+
+
+async def _fetch_tool_defs(http, task_jwt: str, allowed: list[str]):
+    """Fetch the Gateway's MCP tool catalog for THIS token (POST /mcp tools/list, Bearer task_jwt)
+    and shape it into Anthropic tool defs. Returns (tool_defs, name_map) where name_map maps the
+    MCP underscore name (e.g. `scheduler_list_crons`) back to the dotted gwTool the Gateway executes
+    (`scheduler.list_crons`). tools/list already reflects ONLY the token's allowed_tools (§13)."""
+    try:
+        r = await http.post(f"{MCP_GATEWAY_URL}/mcp",
+                            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                            headers={"Authorization": f"Bearer {task_jwt}"})
+        r.raise_for_status()
+        tools = ((r.json() or {}).get("result") or {}).get("tools") or []
+    except Exception:  # noqa: BLE001 — a catalog fetch failure falls back to a plain completion
+        return [], {}
+    defs = [{"name": t["name"], "description": t.get("description", ""),
+             "input_schema": t.get("inputSchema") or {"type": "object"}}
+            for t in tools if t.get("name")]
+    # The dotted gwTool's underscore form is its MCP name (github.search -> github_search); build
+    # the reverse map from the authorized dotted tools so a returned tool_use name resolves exactly.
+    name_map = {t.replace(".", "_"): t for t in allowed}
+    return defs, name_map
+
+
+async def _agentic_loop(http, conversation_id: str, plan: dict, sys_prompt: str, text: str,
+                        org_id: str, user_id: str, tool_defs: list[dict], name_map: dict[str, str]):
+    """The real tool-use loop (§10, §12): the model emits tool_use blocks, each is executed through
+    the Gateway (real authz/approval/taint/audit), the result is fed back, and the loop repeats
+    until the model returns a final answer, hits the iteration cap, or a tool needs approval."""
+    task_jwt = plan["task_jwt"]
+    messages: list[dict] = [{"role": "user", "content": text}]
+    model = None
+    tokens_in = tokens_out = 0
+    cost = 0.0
+    reply = ""
+
+    for _ in range(AGENTIC_MAX_ITERS):
+        if is_cancelled(conversation_id):
+            await _emit(conversation_id, "agent.error",
+                        {"code": "E_CANCELLED", "message": "Tour annulé."})
+            raise _Cancelled()
+
+        cr = await http.post(f"{LLM_PROXY_URL}/v1/complete", json={
+            "tier": "frontier",
+            "messages": [{"role": "system", "content": sys_prompt}, *messages],
+            "org_id": org_id,
+            "tools": tool_defs,
+            "max_tokens": AGENTIC_MAX_TOKENS,
+        })
+        cr.raise_for_status()
+        comp = cr.json()
+        model = comp.get("model") or model
+        usage = comp.get("usage") or {}
+        tokens_in += int(usage.get("tokens_in", 0) or 0)
+        tokens_out += int(usage.get("tokens_out", 0) or 0)
+        cost += float(comp.get("cost_usd", 0.0) or 0.0)
+
+        blocks = comp.get("content_blocks") or []
+        stop = comp.get("stop_reason")
+
+        if stop == "tool_use":
+            # Thread the assistant's tool_use blocks back verbatim so the model sees its own call.
+            messages.append({"role": "assistant", "content": blocks})
+            tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+            tool_results: list[dict] = []
+            for tu in tool_uses:
+                mcp_name = tu.get("name", "")
+                gw_tool = name_map.get(mcp_name) or mcp_name.replace("_", ".", 1)
+                args = tu.get("input") or {}
+                await _emit(conversation_id, "agent.tool.call",
+                            {"tool": gw_tool, "args_summary": _short_args(args)})
+                gw = await http.post(f"{MCP_GATEWAY_URL}/v1/tool/call",
+                                     json={"tool": gw_tool, "args": args, "taskJwt": task_jwt})
+                gwr = gw.json()
+                status = gwr.get("status")
+                if status == "needs_approval":
+                    # Gate the turn (§13.3): the bridge registers the approval + real id, /approve
+                    # re-mints and replays. STOP the loop — the tool must not run un-approved.
+                    await _emit(conversation_id, "agent.approval.needed", {
+                        "tool": gw_tool, "args_summary": _short_args(args),
+                        "user_id": user_id, "org_id": org_id, "args": args,
+                        "allowed_tools": plan.get("allowed_tools") or [],
+                        "approval_tools": plan.get("approval_tools") or []})
+                    meta = {"class": plan.get("class"), "tier": "frontier", "model": model,
+                            "usage": {"tokens_in": tokens_in, "tokens_out": tokens_out},
+                            "cost_usd": cost}
+                    return reply, meta
+                result_text = str(gwr.get("result") or gwr.get("reason") or "")
+                await _emit(conversation_id, "agent.tool.result",
+                            {"tool": gw_tool, "status": status, "result_summary": result_text[:80]})
+                tool_results.append({"type": "tool_result", "tool_use_id": tu.get("id", ""),
+                                     "content": result_text})
+            messages.append({"role": "user", "content": tool_results})
+            continue
+
+        # end_turn (or any non-tool_use stop): the model's text is the final reply.
+        reply = comp.get("text", "") or "".join(
+            b.get("text", "") for b in blocks if b.get("type") == "text")
+        break
+
+    meta = {"class": plan.get("class"), "tier": "frontier", "model": model,
+            "usage": {"tokens_in": tokens_in, "tokens_out": tokens_out}, "cost_usd": cost}
+    return reply, meta
 
 
 # ---------------------------------------------------------------------------

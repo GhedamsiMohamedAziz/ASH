@@ -78,6 +78,22 @@ class ScheduledRunSubmission(BaseModel):
     scheduled_for: str | None = None
 
 
+class InternalAutomationCreate(BaseModel):
+    """POST /internal/automations body — the Scheduler MCP's create_cron persists a job here
+    (never through the public Gateway, §3.2) so a created cron lands in scheduled_jobs and shows
+    up in GET /api/v1/automations. Mirrors the CronSpec the agent authored (§16.1, 0002)."""
+    user_id: str
+    org_id: str
+    name: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    cron: str = Field(min_length=1)
+    timezone: str = "UTC"
+    delivery: dict = Field(default_factory=dict)
+    per_run_budget: dict = Field(default_factory=dict)
+    monthly_budget_usd: float | None = None
+    created_by: str = "agent"
+
+
 # ------------------------------------------------------------------ responses
 class Conversation(BaseModel):
     id: str

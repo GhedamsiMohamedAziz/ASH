@@ -217,6 +217,44 @@ class StubAutomation implements AutomationBackend {
   }
 }
 
+// Real automation backend (§16.1, ADR-012 seam): scheduler.create_cron PERSISTS a job by POSTing
+// to backend-core's internal endpoint (never the public Gateway, §3.2), so a created cron lands in
+// scheduled_jobs and shows up in GET /api/v1/automations. Injected only when BACKEND_CORE_URL is
+// configured; otherwise buildGateway keeps StubAutomation so existing gateway tests stay keyless.
+// list/pause/resume/runNow fall back to the stub (Phase 2 persists CREATE; the read path is
+// backend-core's /automations, not scheduler.list_crons).
+class HttpAutomationBackend implements AutomationBackend {
+  private fallback = new StubAutomation();
+  private baseUrl: string;
+  private serviceToken: string;
+  constructor(baseUrl: string, serviceToken: string) {
+    this.baseUrl = baseUrl;
+    this.serviceToken = serviceToken;
+  }
+
+  async create(userId: string, orgId: string, spec: CronSpec): Promise<JobRef> {
+    const res = await fetch(`${this.baseUrl.replace(/\/$/, "")}/internal/automations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Service-Token": this.serviceToken },
+      body: JSON.stringify({
+        user_id: userId, org_id: orgId, name: spec.name, prompt: spec.prompt,
+        cron: spec.cron, timezone: spec.timezone ?? "UTC", delivery: spec.delivery,
+        per_run_budget: {
+          max_cost_usd: spec.perRunBudget?.maxCostUsd, max_seconds: spec.perRunBudget?.maxSeconds,
+        },
+        created_by: "agent",
+      }),
+    });
+    if (!res.ok) throw new Error(`automation persist failed: HTTP ${res.status}`);
+    const body = (await res.json()) as { jobId: string; status: string };
+    return { jobId: body.jobId, status: body.status, humanSchedule: "" };
+  }
+  async list(userId: string): Promise<JobRef[]> { return this.fallback.list(userId); }
+  async pause(jobId: string): Promise<JobRef> { return this.fallback.pause(jobId); }
+  async resume(jobId: string): Promise<JobRef> { return this.fallback.resume(jobId); }
+  async runNow(jobId: string): Promise<{ runId: string }> { return this.fallback.runNow(jobId); }
+}
+
 // Thin adapter (handler-shape bridge): the browser/database connector tools return structured
 // objects (Promise<unknown>), but the gateway's ToolHandler is Promise<string> — it DLP-scrubs the
 // result and uses its length to decide taint. Stringify non-string results so scrub() runs on the
@@ -309,7 +347,15 @@ export function buildGateway(
   // (from the verified TASK JWT). So rebuild the tool map per invocation from ctx.userId/ctx.orgId and
   // dispatch the named tool — then reuse stringifyHandler so the object result is JSON-stringified for
   // gw.call's DLP/taint (a scheduler result is job metadata; egress "none" means it is never gated).
-  const scheduler = new SchedulerMcp(opts.schedulerBackend ?? new StubAutomation());
+  // Prefer an injected backend (tests); else a REAL HttpAutomationBackend when BACKEND_CORE_URL is
+  // configured (persists create_cron to scheduled_jobs); else the keyless StubAutomation default.
+  const backendCoreUrl = process.env.BACKEND_CORE_URL;
+  const automationToken = process.env.AUTOMATION_SERVICE_TOKEN ?? process.env.INTERNAL_SERVICE_TOKEN;
+  const defaultAutomation: AutomationBackend =
+    backendCoreUrl && automationToken
+      ? new HttpAutomationBackend(backendCoreUrl, automationToken)
+      : new StubAutomation();
+  const scheduler = new SchedulerMcp(opts.schedulerBackend ?? defaultAutomation);
   for (const [name, meta] of Object.entries(SCHED_META)) {
     gw.register(name, stringifyHandler((a, ctx) => scheduler.tools(ctx.userId, ctx.orgId)[name](a)), meta);
   }

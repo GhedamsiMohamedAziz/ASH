@@ -44,6 +44,7 @@ from .models import (
     Channel,
     Conversation,
     CreateConversation,
+    InternalAutomationCreate,
     Message,
     Page,
     ScheduledRunSubmission,
@@ -849,6 +850,34 @@ async def internal_scheduled_run(
     }
     background.add_task(bus.publish, SUBJECT_INBOUND, inbound, message_id=idempotency_key)
     return JSONResponse(status_code=202, content=accepted, background=background)
+
+
+@app.post("/internal/automations", status_code=201)
+async def internal_create_automation(
+    body: InternalAutomationCreate,
+    x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
+) -> JSONResponse:
+    """The Scheduler MCP's create_cron persists a job here (never through the public Gateway,
+    §3.2) so a created cron lands in scheduled_jobs and shows up in GET /api/v1/automations. Same
+    dedicated service-token gate as /internal/scheduled-runs — a user JWT must never reach it. The
+    row's FK targets (org, user) are ensured first so a first-time agent user doesn't 23503."""
+    denied = _require_service_token(x_service_token)
+    if denied is not None:
+        return denied
+    if store.db is None:
+        return _error(503, "E_TOOL_UPSTREAM_ERROR", "persistence unavailable (no DATABASE_URL)")
+
+    await store.db.ensure_dev_user(body.user_id, body.org_id)
+    job_id = f"job_{uuid.uuid4().hex[:24]}"
+    created = await store.db.create_scheduled_job({
+        "id": job_id, "user_id": body.user_id, "org_id": body.org_id,
+        "name": body.name, "prompt": body.prompt, "cron": body.cron, "timezone": body.timezone,
+        "delivery": body.delivery, "per_run_budget": body.per_run_budget,
+        "monthly_budget_usd": body.monthly_budget_usd, "created_by": body.created_by,
+        "status": "active",
+    })
+    return JSONResponse(status_code=201, content={
+        "jobId": created["id"], "status": created["status"], "humanSchedule": ""})
 
 
 # --------------------------------------------------------------- webhook ingress (§15.8)

@@ -146,7 +146,8 @@ class Proxy:
                 if i == 0 and req.simulate_primary_failure:
                     raise BackendError("simulated primary failure (debug flag)")
                 result = self._backend(model).complete(
-                    model=model, messages=req.messages, max_tokens=req.max_tokens
+                    model=model, messages=req.messages, max_tokens=req.max_tokens,
+                    tools=req.tools,
                 )
                 used_model = model
                 break
@@ -180,6 +181,8 @@ class Proxy:
             cost_usd=cost,
             model=used_model,
             fell_back=fell_back,
+            stop_reason=result.stop_reason,
+            content_blocks=result.blocks,
         )
 
     def _log(self, req: CompleteRequest, model: str, tokens_in: int, tokens_out: int,
