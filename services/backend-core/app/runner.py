@@ -198,8 +198,30 @@ async def _integrated_turn(conversation_id: str, text: str, org_id: str,
         tier = "eco" if plan.get("class") == "chat_simple" else "frontier"
         await _emit(conversation_id, "agent.tool.call",
                     {"tool": "llm.complete", "args_summary": f"tier={tier}"})
+        # Give the model its real identity + the ACTUAL tools the pipeline authorized for this
+        # user/turn (allowed_tools/approval_tools are computed by permissions, §9.4 — not invented),
+        # so it answers as the Axone agent and can enumerate its real tools instead of "plain Claude".
+        allowed = plan.get("allowed_tools") or []
+        approval = plan.get("approval_tools") or []
+        profile = plan.get("agent_profile") or "generalist"
+        sys_prompt = (
+            f"Tu es l'agent Axone de l'organisation « {org_id} » (profil : {profile}). "
+            "Tu opères via une MCP Gateway qui filtre, pour cet utilisateur et ce tour, les outils "
+            "auxquels tu as accès. "
+            + (f"Outils (MCP) actuellement disponibles pour toi : {', '.join(allowed)}. "
+               if allowed else "Aucun outil n'est disponible pour ce tour. ")
+            + (f"Outils nécessitant une approbation humaine avant exécution : {', '.join(approval)}. "
+               if approval else "")
+            + "Tu peux aussi créer et gérer des automatisations planifiées (crons) pour l'utilisateur. "
+            "Quand on te demande tes outils, tes MCP ou tes connecteurs, énumère précisément la liste "
+            "ci-dessus — ne prétends jamais n'avoir aucun outil. Réponds dans la langue de l'utilisateur "
+            "(français par défaut), de façon concise et utile."
+        )
         cr = await http.post(f"{LLM_PROXY_URL}/v1/complete", json={
-            "tier": tier, "messages": [{"role": "user", "content": text}], "org_id": org_id,
+            "tier": tier,
+            "messages": [{"role": "system", "content": sys_prompt},
+                         {"role": "user", "content": text}],
+            "org_id": org_id,
         })
         cr.raise_for_status()
         comp = cr.json()
