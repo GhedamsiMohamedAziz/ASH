@@ -1,9 +1,11 @@
 // AX-017 gateway tests. Run: node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { McpGateway } from "../src/gateway.ts";
-import { sign } from "../../../packages/shared-ts/src/jwt.ts";
+import { sign, loadJwks, verifyES256 } from "../../../packages/shared-ts/src/jwt.ts";
 import { scrub } from "../src/dlp.ts";
+import { InMemoryTaint, RedisTaint, taintStoreFromEnv } from "../src/taint.ts";
 
 const SECRET = "dev-task-jwt-secret";
 
@@ -24,19 +26,24 @@ function taskJwt(overrides: Record<string, unknown> = {}): string {
   );
 }
 
-function newGateway() {
-  const gw = new McpGateway(SECRET, { iss: "olma-prompt-layer", aud: "olma-mcp-gateway", now: 1500 });
-  gw.register("github.search", async () => "found 3 results");
-  gw.register("github.create_pr", async (_a, ctx) => `PR opened with credential ${ctx.credential}`);
-  gw.register("github.merge_pr", async () => "merged");
-  gw.register("github.leak", async () => "token ghp_" + "a".repeat(36));
+const M_READ = { ingestsUntrusted: true, egressClass: "none" as const };   // ingests untrusted content
+const M_EGRESS = { ingestsUntrusted: false, egressClass: "public" as const }; // publishes out
+const M_NONE = { ingestsUntrusted: false, egressClass: "none" as const };
+
+function newGateway(taint?: any) {
+  const gw = new McpGateway(SECRET, { iss: "olma-prompt-layer", aud: "olma-mcp-gateway", now: 1500 },
+    undefined, taint);
+  gw.register("github.search", async () => "found 3 results", M_READ);
+  gw.register("github.create_pr", async (_a, ctx) => `PR opened with credential ${ctx.credential}`, M_EGRESS);
+  gw.register("github.merge_pr", async () => "merged", M_EGRESS);
+  gw.register("github.leak", async () => "token ghp_" + "a".repeat(36), M_NONE);
   return gw;
 }
 
 test("handler error reason is DLP-scrubbed (not just success output)", async () => {
   const gw = new McpGateway(SECRET, { iss: "olma-prompt-layer", aud: "olma-mcp-gateway", now: 1500 });
   const secret = "Bearer ghp_" + "a".repeat(36);
-  gw.register("github.search", async () => { throw new Error(`upstream said: ${secret}`); });
+  gw.register("github.search", async () => { throw new Error(`upstream said: ${secret}`); }, M_READ);
   const r = await gw.call({ tool: "github.search", args: {}, taskJwt: taskJwt() });
   assert.equal(r.status, "error");
   assert.ok(!r.reason!.includes(secret), "raw token must not appear in the returned reason");
@@ -87,7 +94,7 @@ test("invalid/forged token is denied fail-closed", async () => {
 
 test("expired token is denied", async () => {
   const gw = new McpGateway(SECRET, { now: 9999 }); // past exp=2000
-  gw.register("github.search", async () => "x");
+  gw.register("github.search", async () => "x", M_READ);
   const r = await gw.call({ tool: "github.search", args: {}, taskJwt: taskJwt() });
   assert.equal(r.status, "denied");
 });
@@ -116,4 +123,99 @@ test("dlp unit: multiple secret shapes", () => {
   assert.match(text, /REDACTED:aws_access_key/);
   assert.ok(redacted.includes("aws_access_key"));
   assert.ok(redacted.includes("bearer"));
+});
+
+// ---------------------------------------------------------------- taint tracking (§17.6)
+test("register REQUIRES egress metadata (invariant #4)", () => {
+  const gw = new McpGateway(SECRET, {});
+  // @ts-expect-error — missing meta must throw at registration, not run unclassified
+  assert.throws(() => gw.register("x.tool", async () => "y"), /egress metadata/);
+});
+
+test("tainted interactive turn forces public-egress tool to approval (§17.6.3)", async () => {
+  const gw = newGateway();
+  const jwt = taskJwt({ task_id: "task_taint_1" });
+  // 1. an ingests-untrusted tool returns a non-empty result → taints the task
+  const s = await gw.call({ tool: "github.search", args: {}, taskJwt: jwt });
+  assert.equal(s.status, "ok");
+  // 2. a public-egress tool now needs approval — even though policy allows it
+  const pr = await gw.call({ tool: "github.create_pr", args: {}, taskJwt: jwt });
+  assert.equal(pr.status, "needs_approval");
+  assert.equal(pr.code, "E_GUARD_TAINTED_EGRESS");
+});
+
+test("tainted SCHEDULED run fails public egress outright (E_GUARD_TAINTED_EGRESS)", async () => {
+  const gw = newGateway();
+  const jwt = taskJwt({ task_id: "task_taint_2", origin: "scheduled" });
+  await gw.call({ tool: "github.search", args: {}, taskJwt: jwt });           // taints
+  const pr = await gw.call({ tool: "github.create_pr", args: {}, taskJwt: jwt });
+  assert.equal(pr.status, "denied");
+  assert.equal(pr.code, "E_GUARD_TAINTED_EGRESS");
+});
+
+test("clean turn: public egress runs normally when no untrusted content ingested", async () => {
+  const gw = newGateway();
+  const jwt = taskJwt({ task_id: "task_clean" });
+  const pr = await gw.call({ tool: "github.create_pr", args: {}, taskJwt: jwt });
+  assert.equal(pr.status, "ok"); // never touched an ingests_untrusted tool → not tainted
+});
+
+test("taint is monotonic — a later clean tool does not un-taint the turn", async () => {
+  const taint = new InMemoryTaint();
+  const gw = newGateway(taint);
+  const jwt = taskJwt({ task_id: "task_mono" });
+  await gw.call({ tool: "github.search", args: {}, taskJwt: jwt });   // taints
+  await gw.call({ tool: "github.leak", args: {}, taskJwt: jwt });     // egress none, clean
+  assert.equal(taint.isTainted("task_mono"), true);                  // still tainted
+  const pr = await gw.call({ tool: "github.create_pr", args: {}, taskJwt: jwt });
+  assert.equal(pr.code, "E_GUARD_TAINTED_EGRESS");
+});
+
+test("taintStoreFromEnv: REDIS_URL unset -> InMemoryTaint (offline/keyless default, ADR-012)", () => {
+  const store = taintStoreFromEnv({} as NodeJS.ProcessEnv);
+  assert.ok(store instanceof InMemoryTaint);
+});
+
+test("taintStoreFromEnv: REDIS_URL set -> RedisTaint (shared with prompt-layer, §4.4)", () => {
+  const store = taintStoreFromEnv({ REDIS_URL: "redis://localhost:6379" } as NodeJS.ProcessEnv);
+  assert.ok(store instanceof RedisTaint);
+});
+
+// ---------------------------------------------------------------- ES256 TASK JWT seam (§13.4)
+// End-to-end: the gateway verifies a Python-minted ES256 token (committed vector) via the
+// JWKS-backed verifyToken strategy — the same path server.ts wires when TASK_JWT_ALG=ES256.
+const FX = (n: string) => new URL(`../../../packages/shared-ts/test/fixtures/${n}`, import.meta.url).pathname;
+const ES_JWKS = loadJwks(FX("task-jwt-es256.jwks.test.json"));
+const ES_VECTOR = JSON.parse(readFileSync(FX("task-jwt-es256.vector.test.json"), "utf8"));
+
+function es256Gateway() {
+  const opts = { iss: "olma-prompt-layer", aud: "olma-mcp-gateway", requireExp: true, now: ES_VECTOR.now };
+  const gw = new McpGateway(SECRET, opts, undefined, undefined,
+    (token: string) => verifyES256(token, ES_JWKS, opts));
+  gw.register("github.search", async () => "found 3 results", M_READ);
+  gw.register("github.create_pr", async (_a, ctx) => `PR opened with credential ${ctx.credential}`, M_EGRESS);
+  return gw;
+}
+
+test("ES256: gateway accepts a Python-minted TASK JWT (cross-language round-trip)", async () => {
+  const gw = es256Gateway();
+  const r = await gw.call({ tool: "github.search", args: {}, taskJwt: ES_VECTOR.token });
+  assert.equal(r.status, "ok");
+});
+
+test("ES256: gateway denies a tampered ES256 token (fail-closed)", async () => {
+  const gw = es256Gateway();
+  const tampered = ES_VECTOR.token.slice(0, -4) + (ES_VECTOR.token.endsWith("AAAA") ? "BBBB" : "AAAA");
+  const r = await gw.call({ tool: "github.search", args: {}, taskJwt: tampered });
+  assert.equal(r.status, "denied");
+  assert.equal(r.code, "E_AUTH_INVALID_TOKEN");
+});
+
+test("ES256: gateway denies an HS256 token when ES256 is configured (no silent fallback)", async () => {
+  const gw = es256Gateway();
+  // A perfectly valid HS256 token must NOT verify under the ES256 verifier.
+  const hs = taskJwt({ iat: ES_VECTOR.now, exp: 9999999999, allowed_tools: ["github.search"] });
+  const r = await gw.call({ tool: "github.search", args: {}, taskJwt: hs });
+  assert.equal(r.status, "denied");
+  assert.equal(r.code, "E_AUTH_INVALID_TOKEN");
 });

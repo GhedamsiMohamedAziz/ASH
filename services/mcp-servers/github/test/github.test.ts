@@ -8,6 +8,15 @@ import { sign } from "../../../../packages/shared-ts/src/jwt.ts";
 const SECRET = "dev-task-jwt-secret";
 const ctx = { userId: "usr_1", orgId: "org_1", credential: "vault:stub" };
 
+// Egress metadata per github tool (§17.6.2): reads ingest untrusted repo content; PR ops publish out.
+const GH_META: Record<string, { ingestsUntrusted: boolean; egressClass: "public" | "internal" | "none" }> = {
+  "github.search": { ingestsUntrusted: true, egressClass: "none" },
+  "github.read": { ingestsUntrusted: true, egressClass: "none" },
+  "github.list_issues": { ingestsUntrusted: true, egressClass: "none" },
+  "github.create_pr": { ingestsUntrusted: false, egressClass: "public" },
+  "github.merge_pr": { ingestsUntrusted: false, egressClass: "public" },
+};
+
 function jwtWith(allowed: string[], approval: string[] = []): string {
   return sign(
     { sub: "usr_1", org_id: "org_1", iat: 1000, exp: 2000,
@@ -49,7 +58,7 @@ test("gateway routes an allowed github tool to the MCP backend", async () => {
   const mcp = new GithubMcp(new StubBackend());
   // register each github tool with the gateway (credential injected by the gateway)
   for (const [name, fn] of Object.entries(mcp.tools())) {
-    gw.register(name, async (args, gctx) => JSON.stringify(await fn(args, gctx)));
+    gw.register(name, async (args, gctx) => JSON.stringify(await fn(args, gctx)), GH_META[name] ?? { ingestsUntrusted: false, egressClass: "none" });
   }
   const r = await gw.call({
     tool: "github.create_pr",
@@ -67,7 +76,7 @@ test("gateway blocks a github tool absent from the TASK JWT (defense in depth)",
   const gw = new McpGateway(SECRET, { now: 1500 });
   const mcp = new GithubMcp();
   for (const [name, fn] of Object.entries(mcp.tools())) {
-    gw.register(name, async (args, gctx) => JSON.stringify(await fn(args, gctx)));
+    gw.register(name, async (args, gctx) => JSON.stringify(await fn(args, gctx)), GH_META[name] ?? { ingestsUntrusted: false, egressClass: "none" });
   }
   // token only allows search; merge must be denied even though the tool exists
   const r = await gw.call({
@@ -83,7 +92,7 @@ test("gateway gates merge_pr when it is an approval tool", async () => {
   const gw = new McpGateway(SECRET, { now: 1500 });
   const mcp = new GithubMcp();
   for (const [name, fn] of Object.entries(mcp.tools())) {
-    gw.register(name, async (args, gctx) => JSON.stringify(await fn(args, gctx)));
+    gw.register(name, async (args, gctx) => JSON.stringify(await fn(args, gctx)), GH_META[name] ?? { ingestsUntrusted: false, egressClass: "none" });
   }
   const r = await gw.call({
     tool: "github.merge_pr",

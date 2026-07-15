@@ -3,6 +3,17 @@
 // In prod this listens on :8443 with mTLS from the sandboxes only (§17.4).
 import { createServer } from "node:http";
 import { McpGateway, type ToolCall } from "./gateway.ts";
+import { GithubMcp, StubBackend, type GithubBackend } from "../../mcp-servers/github/src/github.ts";
+import { RestBackend } from "../../mcp-servers/github/src/rest.ts";
+import { CredentialResolver, InMemoryVault, CredentialMissing } from "./vault.ts";
+import { loadJwks, verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
+
+// Module-level Vault + resolver: the ONE credential store shared by the gateway's per-call
+// injection (resolveCredential) and the HTTP connect surface (POST /v1/connect). Storing a token
+// via the route is therefore visible to the very next tool call for that user (§13.2).
+const DEFAULT_ORG = process.env.OLMA_ORG ?? "org_1";
+export const vault = new InMemoryVault();
+export const resolver = new CredentialResolver(vault);
 
 // Fail closed in prod: verifying TASK tokens against a well-known dev secret would let
 // anyone mint a valid token. Require the env var when OLMA_ENV=prod.
@@ -11,16 +22,79 @@ const SECRET = process.env.TASK_JWT_SECRET
         ? (() => { throw new Error("TASK_JWT_SECRET must be set when OLMA_ENV=prod"); })()
         : "dev-task-jwt-secret");
 
-export function buildGateway(): McpGateway {
-  const gw = new McpGateway(SECRET, {
+// TASK JWT algorithm seam (ADR-012, §13.4). HS256 (shared secret) is the DEFAULT so the
+// offline/keyless dev + test path is unchanged. Set TASK_JWT_ALG=ES256 to verify P-256
+// ECDSA TASK JWTs against a JWKS (TASK_JWT_JWKS_PATH) — the gateway selects the key by the
+// token's `kid` (2-key current+next rotation). No silent fallback: ES256 mode requires the
+// JWKS and rejects unknown kids / wrong alg fail-closed.
+const TASK_JWT_ALG = process.env.TASK_JWT_ALG ?? "HS256";
+
+// Build the verification strategy passed to the gateway. HS256 → undefined (gateway uses its
+// built-in shared-secret verify, byte-identical to before). ES256 → a JWKS-backed verifier.
+function buildVerifyToken(opts: VerifyOpts): ((token: string) => Record<string, any>) | undefined {
+  if (TASK_JWT_ALG === "HS256") return undefined;
+  if (TASK_JWT_ALG === "ES256") {
+    const jwksPath = process.env.TASK_JWT_JWKS_PATH;
+    if (!jwksPath) throw new Error("TASK_JWT_JWKS_PATH must be set when TASK_JWT_ALG=ES256");
+    const jwks = loadJwks(jwksPath); // loaded once at boot; rotation = redeploy/reload
+    return (token: string) => verifyES256(token, jwks, opts);
+  }
+  throw new Error(`unsupported TASK_JWT_ALG: ${TASK_JWT_ALG}`);
+}
+
+// Egress metadata (§17.6.2): search/read/list_issues ingest untrusted repo content; create/merge
+// publish OUT (public). The gateway REQUIRES this at registration — a tool with no meta throws.
+const GH_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "github.search": { ingestsUntrusted: true, egressClass: "none" },
+  "github.read": { ingestsUntrusted: true, egressClass: "none" },
+  "github.list_issues": { ingestsUntrusted: true, egressClass: "none" },
+  "github.create_pr": { ingestsUntrusted: false, egressClass: "public" },
+  "github.merge_pr": { ingestsUntrusted: false, egressClass: "public" },
+};
+
+// The GitHub connector becomes REAL with zero code change: set GITHUB_TOKEN and the gateway swaps
+// StubBackend → RestBackend (§ADR-012). The token reaches the tool via the credential resolver (the
+// Vault stand-in, §13.2) — NOT ambient env inside the backend — so it stays a per-request injection
+// on the one egress point, not a shared ambient secret (confused-deputy guard, §3.2). Pass
+// `githubBackend` to inject a fetch-mocked RestBackend in tests (keyless).
+export function buildGateway(opts: { githubBackend?: GithubBackend } = {}): McpGateway {
+  const token = process.env.GITHUB_TOKEN;
+  const backend: GithubBackend = opts.githubBackend ?? (token ? new RestBackend() : new StubBackend());
+  // Preserve today's behavior: if the standalone GITHUB_TOKEN is set, seed it as the org's github
+  // service credential so existing github.* calls resolve without an explicit /v1/connect (§ADR-012).
+  // Real per-user tokens arrive later via POST /v1/connect → resolver.store.
+  if (token) resolver.storeOrg(DEFAULT_ORG, "github", token);
+  // Only the pure offline/stub path (no env token, no injected backend) has no real egress — there a
+  // missing credential is harmless, so we hand back a sentinel to keep the dev/test chain keyless.
+  const usingStub = !token && !opts.githubBackend;
+  // Real Vault injection (§13.2): the requester's personal token first (Mode A), else the org's
+  // service credential (Mode B). A genuine miss throws CredentialMissing → the gateway denies with
+  // E_CONN_NEEDS_CONNECTION (fail-closed) — the sandbox never gets a shared/ambient token.
+  const resolveCredential = (userId: string, tool: string): string => {
+    try {
+      return resolver.resolve(userId, tool);
+    } catch (e) {
+      if (!(e instanceof CredentialMissing)) throw e;
+      try {
+        return resolver.resolve(userId, tool, DEFAULT_ORG);
+      } catch (e2) {
+        if (usingStub && e2 instanceof CredentialMissing) return "vault:stub";
+        throw e2;
+      }
+    }
+  };
+  const verifyOpts: VerifyOpts = {
     iss: "olma-prompt-layer",
     aud: "olma-mcp-gateway",
     requireExp: true, // a TASK token with no expiry never expires — reject it
-  });
-  // Stub MCP servers for the dev surface; real servers register in P1/P6.
-  gw.register("github.search", async () => "stub: 3 matching files");
-  gw.register("github.create_pr", async (_a, ctx) => `stub: PR opened for ${ctx.userId}`);
-  gw.register("github.merge_pr", async () => "stub: merged");
+  };
+  const gw = new McpGateway(SECRET, verifyOpts, resolveCredential,
+    undefined, buildVerifyToken(verifyOpts));
+  // Mount the real GitHub MCP tool surface (stub or REST behind the same interface).
+  const tools = new GithubMcp(backend).tools();
+  for (const [name, meta] of Object.entries(GH_META)) {
+    gw.register(name, tools[name], meta);
+  }
   return gw;
 }
 
@@ -47,6 +121,36 @@ export function createGatewayServer(gw = buildGateway()) {
         result.status === "needs_approval" ? 202 :
         result.status === "denied" ? 403 : 502;
       return send(httpCode, result);
+    }
+    // Connector store (§13.2, AX-038): the OAuth callback / backend proxies a token here; it is
+    // sealed (AES-256-GCM) in the Vault under (userId, provider) and never returned toward the sandbox.
+    if (req.method === "POST" && req.url === "/v1/connect") {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      let body: { userId?: string; provider?: string; token?: string };
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return send(400, { error: { code: "E_VALIDATION", message: "bad json" } });
+      }
+      const { userId, provider, token } = body;
+      if (!userId || !provider || !token) {
+        return send(400, { error: { code: "E_VALIDATION", message: "userId, provider and token are required" } });
+      }
+      resolver.store(userId, provider, token);
+      return send(200, { connected: true, provider });
+    }
+    // Report the providers this user can already reach: their own stored tokens plus the org-seeded
+    // service credentials (Mode B). Tokens themselves never leave the Vault — only the provider names.
+    if (req.method === "GET" && req.url?.startsWith("/v1/connections")) {
+      const url = new URL(req.url, "http://localhost");
+      const userId = url.searchParams.get("userId") ?? "";
+      const providers = new Set<string>([
+        ...resolver.providers(userId),
+        ...resolver.providers(userId, DEFAULT_ORG),
+      ]);
+      const connections = [...providers].map((provider) => ({ provider, connected: true }));
+      return send(200, { connections });
     }
     send(404, { error: { code: "E_NOT_FOUND", message: "not found" } });
   });

@@ -78,7 +78,7 @@ test("gateway injects the real decrypted credential into the tool handler", asyn
   gw.register("github.search", async (_a, ctx) => {
     seenCredential = ctx.credential;
     return "ok";
-  });
+  }, { ingestsUntrusted: true, egressClass: "none" });
   const r = await gw.call({ tool: "github.search", args: {}, taskJwt: jwt(["github.search"]) });
   assert.equal(r.status, "ok");
   assert.equal(seenCredential, "ghp_realtoken"); // handler got the decrypted token
@@ -87,7 +87,7 @@ test("gateway injects the real decrypted credential into the tool handler", asyn
 test("gateway returns E_CONN_NEEDS_CONNECTION when no credential stored", async () => {
   const resolver = new CredentialResolver(new InMemoryVault());
   const gw = new McpGateway(SECRET, { now: 1500 }, (u, t) => resolver.resolve(u, t));
-  gw.register("github.search", async () => "ok");
+  gw.register("github.search", async () => "ok", { ingestsUntrusted: true, egressClass: "none" });
   const r = await gw.call({ tool: "github.search", args: {}, taskJwt: jwt(["github.search"]) });
   assert.equal(r.code, "E_CONN_NEEDS_CONNECTION");
 });

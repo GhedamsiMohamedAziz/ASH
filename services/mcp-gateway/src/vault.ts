@@ -39,6 +39,8 @@ export interface SecretBackend {
   getEncryptionKey(): Buffer;
   putToken(userId: string, provider: string, sealed: SealedToken): void;
   getToken(userId: string, provider: string): SealedToken | undefined;
+  /** Enumerate the providers a holder has a stored token for (for /v1/connections). */
+  listProviders(holder: string): string[];
 }
 
 export class InMemoryVault implements SecretBackend {
@@ -55,6 +57,14 @@ export class InMemoryVault implements SecretBackend {
   }
   getToken(userId: string, provider: string): SealedToken | undefined {
     return this.tokens.get(`${userId}:${provider}`);
+  }
+  listProviders(holder: string): string[] {
+    const prefix = `${holder}:`;
+    const out: string[] = [];
+    for (const key of this.tokens.keys()) {
+      if (key.startsWith(prefix)) out.push(key.slice(prefix.length));
+    }
+    return out;
   }
 }
 
@@ -93,6 +103,14 @@ export class CredentialResolver {
     const sealed = this.vault.getToken(holder, provider);
     if (!sealed) throw new CredentialMissing(provider);
     return open(sealed, this.vault.getEncryptionKey());
+  }
+
+  /** List the providers a holder is connected to. `orgId` set → the org's service
+   * credentials (Mode B); else the requester's personal tokens (Mode A). Used by
+   * GET /v1/connections to report what a user (and their org) can already reach. */
+  providers(subject: string, orgId?: string): string[] {
+    const holder = orgId ? `org:${orgId}` : subject;
+    return this.vault.listProviders(holder);
   }
 }
 
