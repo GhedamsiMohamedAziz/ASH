@@ -799,6 +799,8 @@ Org plafonnée → 402 en pré-appel, sans plafond → chemin live intact ; `usa
 - **Registre des prompts** : `prompt_registry` (id, version, contenu, hash, actif, auteur). Modification = PR revue + gate d'évals, activation par flag, **rollback en une commande** (`platctl prompts rollback <id>`). Le `prompt_version` utilisé est **tracé sur chaque tour** (corrélation qualité ↔ version).
 - **Boucle feedback → évals** : thumbs down et refus d'approbation récurrents génèrent des **candidats au golden set** (revue humaine hebdo). Le jeu d'évals grandit avec **les vrais échecs du terrain**, pas seulement les cas imaginés.
 
+> ✅ **Backbone déterministe livré (2026-07-15)** — `evals/runner.py` (data-driven JSONL, sans LLM, tourne en CI) exécute les vrais composants (`classify`, `guardrails.check_input`, `memory_mcp.check_write`). Corpus : **146 golden** + **163 adversarial** + **38 cas de précision** (must-NOT-block) ; gate `PASS` sur 308 cas, sémantique de régression 3 % vérifiée. **La boucle find→fix a fonctionné pour de vrai** : le corpus a révélé **35 sous-blocages réels** (injection guardrail EN-only → les injections FR passaient ; DLP mémoire ratait `gho_/sk-ant-/JWT/glpat-/AIza/creds-URL` ; faux positif tiers via `IGNORECASE`). **34 corrigés** (patterns FR, normalisation leet/espacement, persona/jailbreak, formes de secrets alignées §13.5, heuristique tiers prédicat-only), **0 régression sur les 38 cas de précision**, `known_gaps 35→1` (seul le base64 arbitraire reste, indécidable par construction). La suite LLM-jugée (§20.2) s'ajoute par-dessus ce socle.
+
 ### 7.3 Observabilité (§19)
 
 **Métriques canoniques (préfixe `plat_`) :**
