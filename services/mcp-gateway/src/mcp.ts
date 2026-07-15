@@ -69,6 +69,68 @@ export const MCP_TOOLS: McpToolDef[] = [
       required: ["repo", "number"],
     },
   },
+  // Browser connector (schemas mirror BrowserMcp.schemas() — a single { url } string input).
+  {
+    name: "browser_read_page",
+    gwTool: "browser.read_page",
+    description: "Fetch a web page and return its extracted title + readable text through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { url: { type: "string", format: "uri", maxLength: 2048, description: "http(s) URL to browse" } },
+      required: ["url"],
+    },
+  },
+  {
+    name: "browser_fetch",
+    gwTool: "browser.fetch",
+    description: "Fetch a web page and return its raw (capped) body through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { url: { type: "string", format: "uri", maxLength: 2048, description: "http(s) URL to browse" } },
+      required: ["url"],
+    },
+  },
+  // Database connector (schemas mirror database.ts TOOL_SCHEMAS — read-only SELECT/WITH surface).
+  {
+    name: "database_query",
+    gwTool: "database.query",
+    description: "Run a read-only SQL query (a single SELECT or read-only WITH/CTE) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sql: { type: "string", description: "A single SELECT or read-only WITH statement." },
+        pageSize: { type: "number", description: "Rows per page (1-500)." },
+        cursor: { type: "string", description: "Opaque pagination cursor from a previous call." },
+      },
+      required: ["sql"],
+    },
+  },
+  {
+    name: "database_list_tables",
+    gwTool: "database.list_tables",
+    description: "List tables visible to the read-only service account through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pageSize: { type: "number", description: "Tables per page (1-500)." },
+        cursor: { type: "string", description: "Opaque pagination cursor from a previous call." },
+      },
+    },
+  },
+  {
+    name: "database_describe",
+    gwTool: "database.describe",
+    description: "Describe a table's columns (name, type, nullability) through the Axone MCP Gateway.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        table: { type: "string", description: "Table name (bare identifier, no schema-qualification)." },
+      },
+      required: ["table"],
+    },
+  },
 ];
 
 // Extract the raw TASK JWT from an Authorization header. Empty string when absent/malformed → the

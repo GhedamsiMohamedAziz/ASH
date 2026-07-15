@@ -2,9 +2,12 @@
 // dep. POST /v1/tool/call runs a tool through the gateway; GET /healthz, GET /audit.
 // In prod this listens on :8443 with mTLS from the sandboxes only (§17.4).
 import { createServer } from "node:http";
-import { McpGateway, type ToolCall } from "./gateway.ts";
+import { McpGateway, type ToolCall, type ToolHandler } from "./gateway.ts";
 import { GithubMcp, StubBackend, type GithubBackend } from "../../mcp-servers/github/src/github.ts";
 import { RestBackend } from "../../mcp-servers/github/src/rest.ts";
+import { BrowserMcp, type BrowserBackend } from "../../mcp-servers/browser/src/browser.ts";
+import { DatabaseMcp, type DbBackend } from "../../mcp-servers/database/src/database.ts";
+import type { AllowListResolver } from "../../mcp-servers/browser/src/ssrf.ts";
 import { CredentialResolver, InMemoryVault, CredentialMissing } from "./vault.ts";
 import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
 import { ReloadingJwks, DEFAULT_JWKS_RELOAD_SECONDS } from "./jwks-reload.ts";
@@ -71,12 +74,57 @@ const GH_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }
   "github.merge_pr": { ingestsUntrusted: false, egressClass: "public" },
 };
 
+// Browser connector egress metadata (§17.6.2). Both tools pull WEB CONTENT — arbitrary untrusted
+// input — into the turn, so ingestsUntrusted:true. egressClass "public" because the URL argument
+// itself is an outbound channel: a fetch to an attacker-controlled host can carry exfiltrated data
+// OUTSIDE the trust boundary. That is exactly what must be reclassified on a tainted turn — so once
+// this turn has ingested untrusted content, browser.read_page / browser.fetch flip to
+// require_approval (interactive) or E_GUARD_TAINTED_EGRESS (scheduled), even though they also ingest.
+const BROWSER_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "browser.read_page": { ingestsUntrusted: true, egressClass: "public" },
+  "browser.fetch": { ingestsUntrusted: true, egressClass: "public" },
+};
+
+// Database connector egress metadata (§17.6.2). All three tools are READ-ONLY (no write tool exists
+// on this connector) so nothing leaves the trust boundary → egressClass "none". Rows can still hold
+// user-generated / untrusted content (comments, names, free-text columns), so ingestsUntrusted:true:
+// reading them taints the turn, which then gates any later public-egress tool.
+const DB_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }> = {
+  "database.query": { ingestsUntrusted: true, egressClass: "none" },
+  "database.list_tables": { ingestsUntrusted: true, egressClass: "none" },
+  "database.describe": { ingestsUntrusted: true, egressClass: "none" },
+};
+
+// Thin adapter (handler-shape bridge): the browser/database connector tools return structured
+// objects (Promise<unknown>), but the gateway's ToolHandler is Promise<string> — it DLP-scrubs the
+// result and uses its length to decide taint. Stringify non-string results so scrub() runs on the
+// content and a non-empty result correctly taints the turn (an object's `.length` is undefined, so
+// without this the taint set in gateway.call would never fire for these connectors). github tools
+// already return strings/arrays with a usable `.length`, so their wiring stays untouched.
+function stringifyHandler(h: (a: any, ctx: any) => Promise<unknown>): ToolHandler {
+  return async (args, ctx) => {
+    const out = await h(args, ctx);
+    return typeof out === "string" ? out : JSON.stringify(out);
+  };
+}
+
 // The GitHub connector becomes REAL with zero code change: set GITHUB_TOKEN and the gateway swaps
 // StubBackend → RestBackend (§ADR-012). The token reaches the tool via the credential resolver (the
 // Vault stand-in, §13.2) — NOT ambient env inside the backend — so it stays a per-request injection
 // on the one egress point, not a shared ambient secret (confused-deputy guard, §3.2). Pass
 // `githubBackend` to inject a fetch-mocked RestBackend in tests (keyless).
-export function buildGateway(opts: { githubBackend?: GithubBackend } = {}): McpGateway {
+export function buildGateway(
+  opts: {
+    githubBackend?: GithubBackend;
+    // Real headless-browser fetch injectable here (default StubFetch → offline/keyless), mirroring
+    // the githubBackend seam. `browserAllowList` supplies the per-org domain allow-list the SSRF
+    // gate enforces (default deny inside BrowserMcp — nothing is reachable until an org opts in).
+    browserBackend?: BrowserBackend;
+    browserAllowList?: AllowListResolver;
+    // Real read-only Postgres backend (pg.ts) injectable here (default StubDb → offline/keyless).
+    dbBackend?: DbBackend;
+  } = {},
+): McpGateway {
   const token = process.env.GITHUB_TOKEN;
   const backend: GithubBackend = opts.githubBackend ?? (token ? new RestBackend() : new StubBackend());
   // Preserve today's behavior: if the standalone GITHUB_TOKEN is set, seed it as the org's github
@@ -113,6 +161,17 @@ export function buildGateway(opts: { githubBackend?: GithubBackend } = {}): McpG
   const tools = new GithubMcp(backend).tools();
   for (const [name, meta] of Object.entries(GH_META)) {
     gw.register(name, tools[name], meta);
+  }
+  // Mount the Browser connector (StubFetch offline default; real BrowserBackend injectable). The
+  // SSRF gate lives inside BrowserMcp and defaults to deny — pass browserAllowList to permit hosts.
+  const browserTools = new BrowserMcp({ backend: opts.browserBackend, allowList: opts.browserAllowList }).tools();
+  for (const [name, meta] of Object.entries(BROWSER_META)) {
+    gw.register(name, stringifyHandler(browserTools[name]), meta);
+  }
+  // Mount the Database connector (StubDb offline default; real read-only DbBackend injectable).
+  const dbTools = new DatabaseMcp(opts.dbBackend).tools();
+  for (const [name, meta] of Object.entries(DB_META)) {
+    gw.register(name, stringifyHandler(dbTools[name]), meta);
   }
   return gw;
 }
