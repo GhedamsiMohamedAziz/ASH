@@ -141,6 +141,26 @@ test("blocked: DO block (Postgres anonymous procedural write)", () => {
   assert.equal(g.ok, false);
 });
 
+// Side-effecting FUNCTION CALLS: these lead with SELECT and carry no write keyword, so a plain
+// keyword denylist waves them through. The mutation/disclosure hides inside the function (dblink_exec
+// even opens its OWN connection). The SIDE_EFFECT_FUNCS denylist fails them fast; the read-only
+// transaction in PgBackend is the deeper control.
+const BLOCKED_SIDE_EFFECT_FUNCS: Array<[string, string]> = [
+  ["setval", "SELECT setval('s',99999)"],
+  ["nextval", "SELECT nextval('s')"],
+  ["lo_import", "SELECT lo_import('/etc/passwd')"],
+  ["pg_read_file", "SELECT pg_read_file('/etc/passwd')"],
+  ["dblink_exec (opens its own connection, bypassing the read-only credential)", "SELECT dblink_exec('dbname=app','DELETE FROM orders')"],
+];
+
+for (const [label, sql] of BLOCKED_SIDE_EFFECT_FUNCS) {
+  test(`blocked: side-effecting function — ${label}`, () => {
+    const g = guardQuery(sql);
+    assert.equal(g.ok, false);
+    assert.equal(g.code, "E_PERM_TOOL_DENIED");
+  });
+}
+
 // ================================================= guardQuery: false-positive avoidance (allowed)
 
 test("allowed: a write keyword inside a string literal is just data, not SQL", () => {
@@ -161,6 +181,23 @@ test("allowed: a write keyword inside a block comment is inert", () => {
 test("allowed: a quoted identifier containing a write word is just a name", () => {
   const g = guardQuery('SELECT "delete_flag" FROM customers');
   assert.ok(g.ok, g.reason);
+});
+
+test("allowed: MySQL backtick identifiers named like keywords are not false-rejected", () => {
+  const g = guardQuery("SELECT `update`, `set` FROM t");
+  assert.ok(g.ok, g.reason);
+});
+
+test("blocked: a real write is not hidden by backtick identifiers (INSERT INTO `t` ...)", () => {
+  const g = guardQuery("INSERT INTO `t` (id) VALUES (1)");
+  assert.equal(g.ok, false);
+  assert.equal(g.code, "E_PERM_TOOL_DENIED");
+});
+
+test("allowed: leading TABLE is the Postgres read shorthand (TABLE orders)", () => {
+  const g = guardQuery("TABLE orders");
+  assert.ok(g.ok, g.reason);
+  assert.match(g.sql!, /LIMIT 1000$/);
 });
 
 // ======================================================================================= StubDb

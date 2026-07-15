@@ -39,7 +39,22 @@ const WRITE_KEYWORDS =
 // out of place for a stateless read-only credential, so treated as a write vector too.
 const LOCKING_READ = /\bFOR\s+(UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)\b/i;
 
-const LEADING_READ = /^\s*(SELECT|WITH)\b/i;
+// A keyword denylist CANNOT catch mutation hidden inside a FUNCTION CALL whose name contains no
+// banned keyword: `SELECT setval('s',9)`, `SELECT nextval('s')`, `SELECT dblink_exec('db','DELETE
+// ...')` (dblink opens its OWN connection, bypassing the read-only credential entirely), and file
+// disclosure like `SELECT pg_read_file('/etc/passwd')` all lead with SELECT and carry no write
+// keyword. The REAL control is the read-only transaction in PgBackend.runQuery (pg.ts) — the DB
+// itself refuses to mutate the session. This denylist is defense-in-depth: it fails these obvious
+// vectors fast, with a clear error, before they ever reach the database. (A read-only txn still
+// won't stop pg_read_file's disclosure, and dblink/fdw to a DIFFERENT db with write creds is out
+// of this connector's control — those must be disabled at the service-account grant level.)
+const SIDE_EFFECT_FUNCS =
+  /\b(setval|nextval|lo_import|lo_export|pg_read_file|pg_ls_dir|dblink|dblink_exec|copy)\s*\(/i;
+
+// Leading TABLE is the Postgres read shorthand (`TABLE orders` == `SELECT * FROM orders`); no write
+// statement begins with the bare word TABLE (DROP/ALTER/TRUNCATE/CREATE lead those and are caught
+// by WRITE_KEYWORDS), so allowing it as a lead is safe.
+const LEADING_READ = /^\s*(SELECT|WITH|TABLE)\b/i;
 const LIMIT_CLAUSE = /\bLIMIT\s+(\d+)\b/i;
 
 export interface QueryGuardResult {
@@ -49,9 +64,9 @@ export interface QueryGuardResult {
   code?: string;
 }
 
-// Replaces the CONTENTS of every string literal ('...'), quoted identifier ("..."), dollar-quoted
-// string ($$...$$ / $tag$...$tag$) and comment (-- ... / possibly-nested /* ... */) with spaces of
-// the SAME length. This keeps every index in the output aligned with the input, so guardQuery can
+// Replaces the CONTENTS of every string literal ('...'), quoted identifier ("..." and MySQL
+// `...`), dollar-quoted string ($$...$$ / $tag$...$tag$) and comment (-- ... / possibly-nested
+// /* ... */) with spaces of the SAME length. This keeps every index in the output aligned with the input, so guardQuery can
 // safely reuse match positions found in the masked text to slice the ORIGINAL text (e.g. to clamp
 // a LIMIT), while the security checks below only ever see real, executable SQL text: a write
 // keyword or a stacking ';' sitting inside a comment or a string literal can no longer hide a
@@ -80,6 +95,21 @@ export function maskStringsAndComments(sql: string): string {
       while (j < n) {
         if (sql[j] === '"' && sql[j + 1] === '"') { j += 2; continue; }
         if (sql[j] === '"') { j += 1; break; }
+        j += 1;
+      }
+      out += " ".repeat(j - i);
+      i = j;
+      continue;
+    }
+    // MySQL backtick-quoted identifier (`...`, a doubled `` escapes a literal backtick). Masking it
+    // means a legit read of a column NAMED like a keyword (SELECT `update`, `set` FROM t) is not
+    // false-rejected, while a real write hidden by a backtick identifier (INSERT INTO `t` ...) is
+    // still caught because its leading keyword sits OUTSIDE the masked span.
+    if (c === "`") {
+      let j = i + 1;
+      while (j < n) {
+        if (sql[j] === "`" && sql[j + 1] === "`") { j += 2; continue; }
+        if (sql[j] === "`") { j += 1; break; }
         j += 1;
       }
       out += " ".repeat(j - i);
@@ -159,6 +189,9 @@ export function guardQuery(sqlIn: string, rowCap = DEFAULT_ROW_CAP): QueryGuardR
   }
   if (WRITE_KEYWORDS.test(cleaned)) {
     return { ok: false, code: "E_PERM_TOOL_DENIED", reason: "write or admin keyword in a read query" };
+  }
+  if (SIDE_EFFECT_FUNCS.test(cleaned)) {
+    return { ok: false, code: "E_PERM_TOOL_DENIED", reason: "side-effecting or file/network function is not allowed in a read query" };
   }
   if (LOCKING_READ.test(cleaned)) {
     return { ok: false, code: "E_PERM_TOOL_DENIED", reason: "row-locking reads (FOR UPDATE/SHARE) are not allowed" };

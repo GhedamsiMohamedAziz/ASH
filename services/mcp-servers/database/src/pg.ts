@@ -23,10 +23,21 @@ export class PgCredentialMissing extends Error {
   }
 }
 
+// Minimal shape of a "pg" pooled client — a single connection checked out of the pool, so a
+// BEGIN / SET TRANSACTION READ ONLY / query / ROLLBACK sequence all runs on the SAME connection
+// (a bare pool.query() gives no such guarantee).
+export interface PgClientLike {
+  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  release(): void;
+}
+
 // Minimal shape of the "pg" Pool this file relies on — avoids a hard static dependency on the
-// package's types (which aren't installed in the offline/keyless default path).
+// package's types (which aren't installed in the offline/keyless default path). `connect` is
+// optional only so an offline test seam can omit it; the real pg Pool always provides it, and
+// runQuery requires it to enforce the read-only transaction (see below).
 export interface PgPoolLike {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  connect?(): Promise<PgClientLike>;
   end(): Promise<void>;
 }
 
@@ -86,8 +97,37 @@ export class PgBackend implements DbBackend {
   async runQuery(sql: string, ctx: ToolContext): Promise<Record<string, unknown>[]> {
     // `sql` here is always the output of guardQuery() (database.ts) — already verified read-only
     // and row-capped before it ever reaches this method. No further args are interpolated.
+    //
+    // The string guard is defense-in-depth; THIS is the real read-only control. Enforcing it at the
+    // DATABASE — not the string — is what catches mutation hidden inside a side-effecting function
+    // call (setval/nextval, dblink_exec mutating this session, etc.) that a keyword denylist can
+    // never fully cover: we run the query inside a `BEGIN; SET TRANSACTION READ ONLY; ...` block, so
+    // the database itself rejects any write, then ROLLBACK so nothing this connection touched can
+    // ever commit. It runs on a single checked-out client so all four statements share one
+    // connection. (The real pg Pool always exposes connect(); the fallback below exists only for an
+    // offline test seam that injects a pool without it, and that path is still gated by the string
+    // guard upstream.)
     const pool = await this.pool(ctx);
-    const res = await pool.query(sql);
-    return res.rows;
+    if (!pool.connect) {
+      const res = await pool.query(sql);
+      return res.rows;
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET TRANSACTION READ ONLY");
+      const res = await client.query(sql);
+      await client.query("ROLLBACK");
+      return res.rows;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // ignore rollback failure — surface the original error below
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }

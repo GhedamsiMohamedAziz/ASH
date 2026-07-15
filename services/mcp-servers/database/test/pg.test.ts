@@ -11,7 +11,13 @@ import type { ToolContext } from "../src/database.ts";
 const ctx: ToolContext = { userId: "usr_1", orgId: "org_1", credential: "postgres://readonly@db/olma" };
 
 function fakePool(handlers: { query: (text: string, params?: unknown[]) => Promise<{ rows: any[] }> }): PgPoolLike {
-  return { query: handlers.query, end: async () => {} };
+  // connect() returns a client sharing the same query handler, so a test can observe the whole
+  // BEGIN / SET TRANSACTION READ ONLY / query / ROLLBACK sequence runQuery issues on one connection.
+  return {
+    query: handlers.query,
+    connect: async () => ({ query: handlers.query, release: () => {} }),
+    end: async () => {},
+  };
 }
 
 test("listTables queries information_schema.tables with no interpolated input", async () => {
@@ -58,22 +64,44 @@ test("describeTable returns null when no columns come back (unknown table)", asy
   assert.equal(r, null);
 });
 
-test("runQuery executes the already-guarded SQL verbatim, with no extra interpolation", async () => {
-  const sink: any = {};
+test("runQuery runs the guarded SQL verbatim inside a read-only transaction (no extra interpolation)", async () => {
+  const calls: Array<{ text: string; params?: unknown[] }> = [];
   const backend = new PgBackend({
     poolFactory: async () =>
       fakePool({
         query: async (text, params) => {
-          sink.text = text;
-          sink.params = params;
+          calls.push({ text, params });
           return { rows: [{ region: "north", n: 12 }] };
         },
       }),
   });
   const r = await backend.runQuery("SELECT region, count(*) AS n FROM customers GROUP BY region LIMIT 1000", ctx);
   assert.deepEqual(r, [{ region: "north", n: 12 }]);
-  assert.equal(sink.text, "SELECT region, count(*) AS n FROM customers GROUP BY region LIMIT 1000");
-  assert.equal(sink.params, undefined);
+  // The database itself enforces read-only: a SET TRANSACTION READ ONLY wraps the query, and a
+  // ROLLBACK ensures nothing this connection touched can ever commit.
+  assert.deepEqual(
+    calls.map((c) => c.text),
+    ["BEGIN", "SET TRANSACTION READ ONLY", "SELECT region, count(*) AS n FROM customers GROUP BY region LIMIT 1000", "ROLLBACK"],
+  );
+  const queryCall = calls.find((c) => c.text.startsWith("SELECT"))!;
+  assert.equal(queryCall.params, undefined, "the guarded SQL carries no bound params");
+});
+
+test("runQuery ROLLBACKs even when the query fails (nothing is left in an open transaction)", async () => {
+  const calls: string[] = [];
+  const backend = new PgBackend({
+    poolFactory: async () =>
+      fakePool({
+        query: async (text) => {
+          calls.push(text);
+          if (text.startsWith("SELECT")) throw new Error("boom");
+          return { rows: [] };
+        },
+      }),
+  });
+  await assert.rejects(() => backend.runQuery("SELECT * FROM customers LIMIT 1000", ctx), /boom/);
+  assert.ok(calls.includes("SET TRANSACTION READ ONLY"), "read-only was set before the failing query");
+  assert.equal(calls[calls.length - 1], "ROLLBACK", "the transaction is always rolled back");
 });
 
 test("a missing credential fails closed with PgCredentialMissing (E_CONN_NEEDS_CONNECTION)", async () => {
