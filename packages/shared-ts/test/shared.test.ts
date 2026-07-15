@@ -1,9 +1,13 @@
 // AX-007 shared-ts tests. Run: node --test test/shared.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { DedupeGuard, InMemoryBus } from "../src/bus.ts";
 import { InMemoryStore } from "../src/idempotency.ts";
-import { sign, verify, InvalidClaim } from "../src/jwt.ts";
+import {
+  sign, verify, InvalidClaim,
+  loadJwks, verifyES256, UnknownKey, InvalidSignature, JWTError,
+} from "../src/jwt.ts";
 
 // ---------------------------------------------------------------- jwt requireExp
 test("requireExp rejects a token with no expiry (fail closed)", () => {
@@ -66,4 +70,49 @@ test("idempotency ttl expiry", () => {
   s.remember("k", "v", -1); // already expired
   assert.equal(s.get("k"), null);
   assert.equal(s.remember("k", "v2"), true); // can store again
+});
+
+// ---------------------------------------------------------------- ES256 (§13.4 seam)
+// The committed vector is an ES256 TASK JWT minted by the Python prompt-layer signer
+// (services/prompt-layer/app/task_jwt.mint). Verifying the SAME bytes here proves the
+// TS gateway and the Python minter agree cross-language on P-256/JOSE ES256.
+const fx = (name: string) => new URL(`./fixtures/${name}`, import.meta.url);
+const JWKS = loadJwks(fx("task-jwt-es256.jwks.test.json").pathname);
+const VECTOR = JSON.parse(readFileSync(fx("task-jwt-es256.vector.test.json"), "utf8"));
+
+test("ES256: verifies the Python-minted committed vector + claims (cross-language)", () => {
+  const claims = verifyES256(VECTOR.token, JWKS, {
+    now: VECTOR.now, iss: "olma-prompt-layer", aud: "olma-mcp-gateway", requireExp: true,
+  });
+  assert.equal(claims.sub, "usr_1");
+  assert.equal(claims.org_id, "org_1");
+  assert.deepEqual(claims.allowed_tools, VECTOR.claims.allowed_tools);
+  assert.equal(claims.task_id, "task_es256_vector");
+});
+
+test("ES256 fail-closed: unknown kid rejected", () => {
+  // Re-header the token with a kid that is not in the JWKS.
+  const [h, p, s] = VECTOR.token.split(".");
+  const hdr = JSON.parse(Buffer.from(h, "base64url").toString());
+  hdr.kid = VECTOR.unknown_kid;
+  const forged = `${Buffer.from(JSON.stringify(hdr)).toString("base64url")}.${p}.${s}`;
+  assert.throws(() => verifyES256(forged, JWKS, { now: VECTOR.now }), UnknownKey);
+});
+
+test("ES256 fail-closed: tampered signature rejected", () => {
+  const tampered = VECTOR.token.slice(0, -4) + (VECTOR.token.endsWith("AAAA") ? "BBBB" : "AAAA");
+  assert.throws(() => verifyES256(tampered, JWKS, { now: VECTOR.now }), InvalidSignature);
+});
+
+test("ES256 fail-closed: aud mismatch rejected", () => {
+  assert.throws(
+    () => verifyES256(VECTOR.token, JWKS, { now: VECTOR.now, aud: "someone-else" }),
+    InvalidClaim,
+  );
+});
+
+test("ES256 fail-closed: alg:none / wrong alg rejected (no HS256 fallback)", () => {
+  const [, p, s] = VECTOR.token.split(".");
+  const noneHdr = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT", kid: VECTOR.kid })).toString("base64url");
+  assert.throws(() => verifyES256(`${noneHdr}.${p}.${s}`, JWKS, { now: VECTOR.now }), JWTError);
 });

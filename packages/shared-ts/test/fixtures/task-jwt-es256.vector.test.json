@@ -1,0 +1,24 @@
+{
+  "_comment": "TEST VECTOR ONLY - ES256 TASK JWT minted by prompt-layer app.task_jwt.mint; verified by both the Python and TS suites to prove cross-language agreement.",
+  "kid": "task-2026-07",
+  "unknown_kid": "task-9999-99",
+  "now": 1000,
+  "claims": {
+    "sub": "usr_1",
+    "org_id": "org_1",
+    "iss": "olma-prompt-layer",
+    "aud": "olma-mcp-gateway",
+    "iat": 1000,
+    "exp": 9999999999,
+    "allowed_tools": [
+      "github.search",
+      "github.create_pr"
+    ],
+    "approval_tools": [
+      "github.merge_pr"
+    ],
+    "task_id": "task_es256_vector",
+    "origin": "interactive"
+  },
+  "token": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InRhc2stMjAyNi0wNyJ9.eyJzdWIiOiJ1c3JfMSIsIm9yZ19pZCI6Im9yZ18xIiwiaXNzIjoib2xtYS1wcm9tcHQtbGF5ZXIiLCJhdWQiOiJvbG1hLW1jcC1nYXRld2F5IiwiaWF0IjoxMDAwLCJleHAiOjk5OTk5OTk5OTksImFsbG93ZWRfdG9vbHMiOlsiZ2l0aHViLnNlYXJjaCIsImdpdGh1Yi5jcmVhdGVfcHIiXSwiYXBwcm92YWxfdG9vbHMiOlsiZ2l0aHViLm1lcmdlX3ByIl0sInRhc2tfaWQiOiJ0YXNrX2VzMjU2X3ZlY3RvciIsIm9yaWdpbiI6ImludGVyYWN0aXZlIn0.3xfmRQyYjpFv05bRyl8rA7tlcwZ104qfAunJ-ocIrrKdqJd2OXalMwctydkx5Xde-OoGam-6eoB2HCDZl06p3Q"
+}

@@ -29,6 +29,8 @@
       "msg": { "fr": "Contenu bloqué par la politique de sécurité.", "en": "Content blocked by the security policy.", "ar": "تم حظر المحتوى بواسطة سياسة الأمان." } },
     { "code": "E_GUARD_OUTPUT_REDACTED", "http": 200, "retry": "na", "group": "agent",
       "msg": { "fr": "Réponse livrée avec masquage de données sensibles.", "en": "Response delivered with sensitive data redacted.", "ar": "تم تسليم الرد مع إخفاء البيانات الحساسة." } },
+    { "code": "E_GUARD_TAINTED_EGRESS", "http": 403, "retry": "no", "group": "agent",
+      "msg": { "fr": "Sortie publique bloquée : ce tour a ingéré du contenu non fiable (§17.6).", "en": "Public egress blocked: this turn ingested untrusted content (§17.6).", "ar": "تم حظر الإخراج العام: هذه الجولة استوعبت محتوى غير موثوق." } },
     { "code": "E_BUDGET_EXCEEDED", "http": 402, "retry": "no", "group": "agent",
       "msg": { "fr": "Budget atteint pour ce tour.", "en": "Budget reached for this turn.", "ar": "تم بلوغ الميزانية لهذه الجولة." } },
     { "code": "E_SANDBOX_UNAVAILABLE", "http": 503, "retry": "queue", "group": "agent",
