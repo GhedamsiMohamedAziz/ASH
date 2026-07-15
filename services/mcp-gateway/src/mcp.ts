@@ -7,6 +7,7 @@
 // taskJwt. Dependency-free — node stdlib plus the framing — and wired into the real server's auth path,
 // never a parallel one. Proven end-to-end by tests/integration/test_gateway_e2e.py (opencode → /mcp).
 import type { McpGateway } from "./gateway.ts";
+import { MCPMARKET_MCP_TOOLS } from "./remote-mcp.ts";
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -491,6 +492,9 @@ export const MCP_TOOLS: McpToolDef[] = [
       required: ["id"],
     },
   },
+  // mcpmarket autolearn meta-tools (mcpmarket.search / request_register). Gated by policy:
+  // search=allow, request_register=require_approval. tools/call routes gwTool → gw.call.
+  ...MCPMARKET_MCP_TOOLS,
 ];
 
 // Extract the raw TASK JWT from an Authorization header. Empty string when absent/malformed → the

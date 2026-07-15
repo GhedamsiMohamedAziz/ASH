@@ -17,6 +17,7 @@ import { CredentialResolver, InMemoryVault, CredentialMissing, BackendCoreTokenS
 import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
 import { ReloadingJwks, DEFAULT_JWKS_RELOAD_SECONDS } from "./jwks-reload.ts";
 import { handleMcpRpc, bearer } from "./mcp.ts";
+import { MCPMARKET_META_HANDLERS } from "./remote-mcp.ts";
 
 // Module-level Vault + resolver: the ONE credential store shared by the gateway's per-call
 // injection (resolveCredential) and the HTTP connect surface (POST /v1/connect). Storing a token
@@ -434,6 +435,11 @@ export function buildGateway(
   const notionTools = new NotionMcp(opts.notionBackend).tools();
   for (const [name, meta] of Object.entries(NOTION_META)) {
     gw.register(name, stringifyHandler(notionTools[name]), meta);
+  }
+  // mcpmarket autolearn meta-tools (mcpmarket.search / request_register). request_register only
+  // RAISES an approval — a human/admin approves before any remote server is actually mounted.
+  for (const [name, { handler, meta }] of Object.entries(MCPMARKET_META_HANDLERS)) {
+    gw.register(name, handler, meta);
   }
   return gw;
 }

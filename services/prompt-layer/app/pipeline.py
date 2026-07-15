@@ -29,8 +29,12 @@ TASK_JWT_TTL = 900  # 15 min (§13.4)
 
 # Candidate tool universe evaluated against tool_policies each turn (§9.4).
 _DEFAULT_TOOLS = ["github.search", "github.read", "github.create_pr", "github.merge_pr",
+                  "github.list_repos", "github.list_issues", "github.get_issue",
+                  "github.list_pull_requests", "github.get_pull_request",
+                  "github.search_repositories", "github.search_issues", "github.list_commits",
                   "database.read", "database.write", "scheduler.list_crons",
-                  "scheduler.create_cron"]
+                  "scheduler.create_cron",
+                  "mcpmarket.search", "mcpmarket.request_register"]
 
 # Default org policies (mirror db/migrations/0003_seed_policies.sql). Prod loads
 # these from the tool_policies table per org via policy.load_from_postgres; here
@@ -44,6 +48,18 @@ _DEFAULT_POLICIES = [
     Policy("org_1", "member", "database.write", "deny"),
     Policy("org_1", "member", "scheduler.list_crons", "allow"),
     Policy("org_1", "member", "scheduler.create_cron", "require_approval", None),
+    # GitHub read toolset (real api.github.com via the user's OAuth token) — allow.
+    Policy("org_1", "member", "github.list_repos", "allow"),
+    Policy("org_1", "member", "github.list_issues", "allow"),
+    Policy("org_1", "member", "github.get_issue", "allow"),
+    Policy("org_1", "member", "github.list_pull_requests", "allow"),
+    Policy("org_1", "member", "github.get_pull_request", "allow"),
+    Policy("org_1", "member", "github.search_repositories", "allow"),
+    Policy("org_1", "member", "github.search_issues", "allow"),
+    Policy("org_1", "member", "github.list_commits", "allow"),
+    # mcpmarket autolearn: search freely; registering a server needs approval (guardrail).
+    Policy("org_1", "member", "mcpmarket.search", "allow"),
+    Policy("org_1", "member", "mcpmarket.request_register", "require_approval", None),
 ]
 _DEFAULT_ENGINE = PolicyEngine(_DEFAULT_POLICIES)
 
