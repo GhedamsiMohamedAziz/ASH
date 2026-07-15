@@ -94,6 +94,19 @@ class InternalAutomationCreate(BaseModel):
     created_by: str = "agent"
 
 
+class InternalOAuthToken(BaseModel):
+    """POST /internal/oauth-tokens body — the MCP Gateway persists a SEALED OAuth token here so a
+    gateway RESTART can rehydrate connections (§13.2). ``sealed_token`` is base64 of the gateway's
+    AES-256-GCM sealed blob; backend-core stores only that ciphertext (the gateway holds the key),
+    so plaintext never reaches this service. org_id/scopes/expires_at are optional metadata."""
+    user_id: str
+    provider: str
+    sealed_token: str  # base64 of the gateway's AES-256-GCM sealed blob (ciphertext only)
+    org_id: str | None = None
+    scopes: list[str] | None = None
+    expires_at: str | None = None
+
+
 # ------------------------------------------------------------------ responses
 class Conversation(BaseModel):
     id: str

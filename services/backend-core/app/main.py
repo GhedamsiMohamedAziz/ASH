@@ -45,6 +45,7 @@ from .models import (
     Conversation,
     CreateConversation,
     InternalAutomationCreate,
+    InternalOAuthToken,
     Message,
     Page,
     ScheduledRunSubmission,
@@ -878,6 +879,60 @@ async def internal_create_automation(
     })
     return JSONResponse(status_code=201, content={
         "jobId": created["id"], "status": created["status"], "humanSchedule": ""})
+
+
+# --------------------------------------------------------------- internal oauth-token durability (§13.2)
+# The connector OAuth-token durability fix: the gateway's per-connection tokens used to live ONLY in
+# its in-memory vault, so a gateway restart wiped every connection. The gateway now persists the
+# SEALED token here (upsert) and rehydrates from here on boot (list). The ENCRYPTION BOUNDARY is
+# strict: the gateway holds the AES-256-GCM key and sends us only ciphertext — backend-core stores
+# and returns ciphertext, never plaintext (§13.2, matches the KMS-envelope seam). Both routes are
+# service-token gated (same as /internal/automations) and NEVER exposed to the public gateway/user.
+@app.post("/internal/oauth-tokens", status_code=204, response_model=None)
+async def internal_upsert_oauth_token(
+    body: InternalOAuthToken,
+    x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
+) -> Response | JSONResponse:
+    denied = _require_service_token(x_service_token)
+    if denied is not None:
+        return denied
+    if store.db is None:
+        return _error(503, "E_TOOL_UPSTREAM_ERROR", "persistence unavailable (no DATABASE_URL)")
+    try:
+        sealed = base64.b64decode(body.sealed_token, validate=True)
+    except Exception:  # noqa: BLE001 — a malformed blob is a client error, never a 500
+        return _error(400, "E_VALIDATION", "sealed_token must be valid base64")
+    # Ensure the FK target user exists (a first-time connector user) when we know its org — same
+    # guard as /internal/automations. Without an org we can't seed, so rely on the user existing.
+    if body.org_id:
+        await store.db.ensure_dev_user(body.user_id, body.org_id)
+    await store.db.upsert_oauth_token(
+        body.user_id, body.provider, sealed,
+        org_id=body.org_id, scopes=body.scopes, expires_at=body.expires_at)
+    return Response(status_code=204)
+
+
+@app.get("/internal/oauth-tokens")
+async def internal_list_oauth_tokens(
+    x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
+) -> JSONResponse:
+    """Every stored SEALED token so the gateway rehydrates all connections on boot (§13.2).
+    Degrades to an empty list without a DB (skip pattern), keeping make test-all offline."""
+    denied = _require_service_token(x_service_token)
+    if denied is not None:
+        return denied
+    if store.db is None:
+        return JSONResponse(status_code=200, content={"tokens": []})
+    rows = await store.db.list_oauth_tokens()
+    tokens = [{
+        "user_id": r["user_id"],
+        "provider": r["provider"],
+        "org_id": r["org_id"],
+        "sealed_token": base64.b64encode(r["access_token"]).decode(),
+        "scopes": list(r["scopes"]) if r["scopes"] is not None else None,
+        "expires_at": r["expires_at"].isoformat() if r["expires_at"] is not None else None,
+    } for r in rows]
+    return JSONResponse(status_code=200, content={"tokens": tokens})
 
 
 # --------------------------------------------------------------- webhook ingress (§15.8)

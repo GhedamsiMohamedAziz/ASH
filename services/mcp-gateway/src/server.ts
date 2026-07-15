@@ -13,7 +13,7 @@ import { M365Mcp, type M365Backend } from "../../mcp-servers/m365/src/m365.ts";
 import { SlackMcp, type SlackBackend } from "../../mcp-servers/slack/src/slack.ts";
 import { NotionMcp, type NotionBackend } from "../../mcp-servers/notion/src/notion.ts";
 import type { AllowListResolver } from "../../mcp-servers/browser/src/ssrf.ts";
-import { CredentialResolver, InMemoryVault, CredentialMissing } from "./vault.ts";
+import { CredentialResolver, InMemoryVault, CredentialMissing, BackendCoreTokenStore } from "./vault.ts";
 import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
 import { ReloadingJwks, DEFAULT_JWKS_RELOAD_SECONDS } from "./jwks-reload.ts";
 import { handleMcpRpc, bearer } from "./mcp.ts";
@@ -22,8 +22,30 @@ import { handleMcpRpc, bearer } from "./mcp.ts";
 // injection (resolveCredential) and the HTTP connect surface (POST /v1/connect). Storing a token
 // via the route is therefore visible to the very next tool call for that user (§13.2).
 const DEFAULT_ORG = process.env.OLMA_ORG ?? "org_1";
-export const vault = new InMemoryVault();
-export const resolver = new CredentialResolver(vault);
+// The gateway's AES-256 vault key. Persisted connections (below) are sealed with THIS key, so it
+// MUST be stable across restarts for rehydration to decrypt them — otherwise every boot mints a
+// fresh key and the persisted ciphertext is unreadable ("key rotated"). Prod sources this from
+// HashiCorp Vault; in dev set GATEWAY_VAULT_KEY to a 32-byte (64-hex-char) value so a restart reuses
+// the same key. Unset → a random per-boot key (offline tests + non-durable dev, unchanged).
+const VAULT_KEY_HEX = process.env.GATEWAY_VAULT_KEY;
+const vaultKey = VAULT_KEY_HEX
+  ? (() => {
+      const k = Buffer.from(VAULT_KEY_HEX, "hex");
+      if (k.length !== 32) throw new Error("GATEWAY_VAULT_KEY must be 32 bytes (64 hex chars)");
+      return k;
+    })()
+  : undefined;
+export const vault = new InMemoryVault(vaultKey);
+// Durability seam (§13.2): when BACKEND_CORE_URL + a service token are configured, back the resolver
+// with a BackendCoreTokenStore so each connect PERSISTS its sealed token and a restart REHYDRATES
+// them (resolver.load() at boot). Only the CIPHERTEXT crosses this seam — the gateway keeps the AES
+// key. Unconfigured (offline/tests) → undefined → pure in-memory, exactly as before.
+const OAUTH_PERSIST_URL = process.env.BACKEND_CORE_URL;
+const OAUTH_PERSIST_TOKEN = process.env.AUTOMATION_SERVICE_TOKEN ?? process.env.INTERNAL_SERVICE_TOKEN;
+const oauthTokenStore = OAUTH_PERSIST_URL && OAUTH_PERSIST_TOKEN
+  ? new BackendCoreTokenStore(OAUTH_PERSIST_URL, OAUTH_PERSIST_TOKEN)
+  : undefined;
+export const resolver = new CredentialResolver(vault, undefined, oauthTokenStore);
 
 // Fail closed in prod: verifying TASK tokens against a well-known dev secret would let
 // anyone mint a valid token. Require the env var when OLMA_ENV=prod.
@@ -532,5 +554,11 @@ export function createGatewayServer(gw = buildGateway()) {
 // Boot when run directly.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? 8443);
+  // Rehydrate persisted connections BEFORE serving so the very first tool call after a restart can
+  // resolve a previously-connected token (§13.2). Best-effort: a load failure logs and the gateway
+  // still boots (fresh in-memory), never blocking startup.
+  resolver.load().then(({ loaded, skipped }) => {
+    if (loaded || skipped) console.log(`mcp-gateway rehydrated ${loaded} connection(s), skipped ${skipped}`);
+  }).catch(() => {});
   createGatewayServer().listen(port, () => console.log(`mcp-gateway on :${port}`));
 }

@@ -108,6 +108,71 @@ export class LocalKmsProvider implements KmsProvider {
   }
 }
 
+// ------------------------------------------------------------------ durable token store (§13.2)
+// Connector OAuth tokens must SURVIVE a gateway restart. The in-memory vault above is volatile, so
+// the resolver ALSO persists each sealed token through a TokenStore (backend-core's service-gated
+// /internal/oauth-tokens) and rehydrates from it on boot. The encryption boundary is strict: only
+// the CIPHERTEXT (SealedToken) crosses this seam — the gateway keeps the AES key, backend-core
+// stores/returns only sealed bytes. Default undefined → pure in-memory, so offline tests are keyless.
+export interface PersistedToken {
+  userId: string;
+  provider: string;
+  sealed: SealedToken; // the AES-256-GCM ciphertext blob — never plaintext
+  orgId?: string | null;
+  scopes?: string[] | null;
+  expiresAt?: string | null;
+}
+
+export interface TokenStore {
+  /** Durably persist one sealed token. Best-effort at the call site (log + continue on throw). */
+  save(token: PersistedToken): Promise<void>;
+  /** Load every persisted sealed token so the resolver can rehydrate its in-memory map on boot. */
+  loadAll(): Promise<PersistedToken[]>;
+}
+
+// backend-core-backed TokenStore: POST/GET /internal/oauth-tokens with X-Service-Token — the SAME
+// internal surface (§3.2) the Scheduler persists crons through, never the public gateway. The
+// sealed blob travels as base64(JSON(SealedToken)); backend-core stores the decoded bytes as the
+// access_token BYTEA and hands them straight back, so it only ever sees ciphertext.
+export class BackendCoreTokenStore implements TokenStore {
+  private baseUrl: string;
+  private serviceToken: string;
+  constructor(baseUrl: string, serviceToken: string) {
+    this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.serviceToken = serviceToken;
+  }
+  private static encode(sealed: SealedToken): string {
+    return Buffer.from(JSON.stringify(sealed), "utf8").toString("base64");
+  }
+  private static decode(b64: string): SealedToken {
+    return JSON.parse(Buffer.from(b64, "base64").toString("utf8")) as SealedToken;
+  }
+  async save(t: PersistedToken): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/internal/oauth-tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Service-Token": this.serviceToken },
+      body: JSON.stringify({
+        user_id: t.userId, provider: t.provider,
+        sealed_token: BackendCoreTokenStore.encode(t.sealed),
+        org_id: t.orgId ?? null, scopes: t.scopes ?? null, expires_at: t.expiresAt ?? null,
+      }),
+    });
+    if (!res.ok) throw new Error(`oauth-token persist failed: HTTP ${res.status}`);
+  }
+  async loadAll(): Promise<PersistedToken[]> {
+    const res = await fetch(`${this.baseUrl}/internal/oauth-tokens`, {
+      headers: { "X-Service-Token": this.serviceToken },
+    });
+    if (!res.ok) throw new Error(`oauth-token load failed: HTTP ${res.status}`);
+    const body = (await res.json()) as { tokens?: Array<Record<string, any>> };
+    return (body.tokens ?? []).map((r) => ({
+      userId: r.user_id, provider: r.provider, orgId: r.org_id,
+      scopes: r.scopes ?? null, expiresAt: r.expires_at ?? null,
+      sealed: BackendCoreTokenStore.decode(r.sealed_token),
+    }));
+  }
+}
+
 // The resolver the gateway calls. Decrypts the credential at call time; returns a
 // sentinel string the sandbox never sees (the gateway passes it to the MCP server
 // and it stays server-side). Throws E_CONN_NEEDS_CONNECTION if no token stored.
@@ -115,12 +180,16 @@ export class CredentialResolver {
   private vault: SecretBackend;
   private kms: KmsProvider;
   private wrappedDataKey: WrappedKey;
+  private tokenStore?: TokenStore;
+  private lastPersist: Promise<void> = Promise.resolve();
   // The KmsProvider defaults to LocalKmsProvider → the data key is the vault's key, wrapped and
   // unwrapped in-process, so the at-rest SealedToken format is BYTE-IDENTICAL to before (credentials
   // are still sealed with that same 32-byte data key). Inject a real KMS to move the KEK off-box.
-  constructor(vault: SecretBackend, kms: KmsProvider = new LocalKmsProvider()) {
+  // Inject a TokenStore to make connections DURABLE across restarts (default undefined → volatile).
+  constructor(vault: SecretBackend, kms: KmsProvider = new LocalKmsProvider(), tokenStore?: TokenStore) {
     this.vault = vault;
     this.kms = kms;
+    this.tokenStore = tokenStore;
     // Envelope the data key once; hold only the WRAPPED form, unwrap at use time.
     this.wrappedDataKey = kms.wrap(vault.getEncryptionKey());
   }
@@ -130,9 +199,50 @@ export class CredentialResolver {
     return this.kms.unwrap(this.wrappedDataKey);
   }
 
-  /** Store a user's OAuth token, sealed. Called by the OAuth callback (AX-038). */
+  /** Store a user's OAuth token, sealed. Called by the OAuth callback (AX-038). Also DURABLY
+   * persists the sealed blob (best-effort) when a TokenStore is configured, so the connection
+   * survives a gateway restart — a persist failure logs and continues, never breaking connect. */
   store(userId: string, provider: string, token: string): void {
-    this.vault.putToken(userId, provider, seal(token, this.dataKey()));
+    const sealed = seal(token, this.dataKey());
+    this.vault.putToken(userId, provider, sealed);
+    if (this.tokenStore) {
+      this.lastPersist = this.tokenStore.save({ userId, provider, sealed }).catch((err) => {
+        console.error(`[vault] token persist failed for ${userId}/${provider}: ${err?.message ?? err}`);
+      });
+    }
+  }
+
+  /** Await the most recent best-effort persist (tests / graceful shutdown). */
+  async settled(): Promise<void> {
+    await this.lastPersist;
+  }
+
+  /** Rehydrate the in-memory vault from the TokenStore on boot (§13.2): load every persisted sealed
+   * blob and re-insert it, so connections survive a restart. Each blob is tag-verified with the
+   * gateway key first; any that fail to open (e.g. the key was rotated) are skipped + logged rather
+   * than poisoning the map. No-op (0/0) when no TokenStore is configured — offline path unchanged. */
+  async load(): Promise<{ loaded: number; skipped: number }> {
+    if (!this.tokenStore) return { loaded: 0, skipped: 0 };
+    let rows: PersistedToken[];
+    try {
+      rows = await this.tokenStore.loadAll();
+    } catch (err: any) {
+      console.error(`[vault] rehydrate load failed: ${err?.message ?? err}`);
+      return { loaded: 0, skipped: 0 };
+    }
+    let loaded = 0;
+    let skipped = 0;
+    for (const r of rows) {
+      try {
+        open(r.sealed, this.dataKey()); // verify the tag decrypts with OUR key before trusting it
+        this.vault.putToken(r.userId, r.provider, r.sealed);
+        loaded++;
+      } catch {
+        console.error(`[vault] skipping undecryptable token ${r.userId}/${r.provider} (key rotated?)`);
+        skipped++;
+      }
+    }
+    return { loaded, skipped };
   }
 
   /** Store an ORG service credential (Mode B, §3.1): one entry per org+connector,

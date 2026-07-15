@@ -144,6 +144,40 @@ class PgStore:
             )
         return dict(row)
 
+    # ------------------------------------------------------------- oauth tokens (§13.2, §16.1, 0001/0004)
+    async def upsert_oauth_token(
+        self, user_id: str, provider: str, sealed: bytes, *,
+        org_id: str | None = None, scopes: list[str] | None = None,
+        expires_at: str | None = None,
+    ) -> None:
+        """Persist the MCP Gateway's SEALED (AES-256-GCM ciphertext) OAuth token so a gateway
+        RESTART can rehydrate the connection (the durability fix). The gateway holds the encryption
+        key and hands us only ciphertext — plaintext NEVER reaches backend-core (§13.2), so
+        access_token BYTEA stores exactly the sealed blob. Upsert on the (user_id, provider) PK.
+        org_id scopes the RLS session GUC (0004), same as create_scheduled_job; FK targets (org,
+        user) are ensured by the caller (/internal/oauth-tokens) so a first-time user doesn't 23503."""
+        async with self._acquire(org_id) as con:
+            await con.execute(
+                """INSERT INTO oauth_tokens(user_id, provider, access_token, scopes, expires_at, org_id)
+                   VALUES($1,$2,$3,$4::text[],$5::timestamptz,$6)
+                   ON CONFLICT (user_id, provider) DO UPDATE SET
+                     access_token=EXCLUDED.access_token, scopes=EXCLUDED.scopes,
+                     expires_at=EXCLUDED.expires_at, org_id=EXCLUDED.org_id""",
+                user_id, provider, sealed, scopes, expires_at, org_id,
+            )
+
+    async def list_oauth_tokens(self) -> list[dict]:
+        """Every stored SEALED OAuth token, for the gateway to rehydrate all connections on boot
+        (§13.2). A cross-org SERVICE read (the gateway serves every org, unlike the per-tenant app
+        reads), so a plain pooled connection — access_token is the AES-256-GCM ciphertext, returned
+        to the gateway which ALONE holds the key to open it."""
+        async with self._pool.acquire() as con:
+            rows = await con.fetch(
+                "SELECT user_id, provider, org_id, access_token, scopes, expires_at "
+                "FROM oauth_tokens ORDER BY user_id, provider"
+            )
+        return [dict(r) for r in rows]
+
     async def list_scheduled_runs(self, job_id: str) -> list[dict]:
         async with self._pool.acquire() as con:
             rows = await con.fetch(
