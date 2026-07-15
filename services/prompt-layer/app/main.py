@@ -123,7 +123,9 @@ def reapprove(body: ReapproveRequest) -> dict:
 @app.post("/v1/plan")
 def plan(body: PlanRequest):
     try:
-        task = build_task(body.inbound, role=body.role)
+        # Pass the shared taint ledger so a webhook/untrusted inbound pre-taints its task_id
+        # (§15.8/§17.6.3): the Gateway then reclasses egress on the resulting turn.
+        task = build_task(body.inbound, role=body.role, taint=_taint)
     except GuardrailBlocked as exc:
         return JSONResponse(status_code=422,
                             content=envelope(exc.code, trace_id=uuid.uuid4().hex))

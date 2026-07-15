@@ -41,7 +41,10 @@ def test_matching_event_produces_inbound():
     body = '{"pr":42}'
     out = r.process("github", "pull_request.opened", body, _sign("gh-secret", body), payload)
     assert len(out) == 1
-    assert out[0]["channel"] == "scheduler"
+    # UNTRUSTED webhook provenance (§15.8): a webhook payload is an injection surface, so the
+    # emitted turn is tainted (channel=webhook + untrusted), unlike a user-authored cron.
+    assert out[0]["channel"] == "webhook"
+    assert out[0]["untrusted"] is True
     assert out[0]["text"] == "review PR 42 in checkout"  # interpolated
 
 

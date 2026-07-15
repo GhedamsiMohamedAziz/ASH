@@ -19,6 +19,7 @@ class Channel(str, Enum):
     slack = "slack"
     web = "web"
     scheduler = "scheduler"
+    webhook = "webhook"  # event-driven ingress (§15.8) — an UNTRUSTED, non-interactive origin
 
 
 class AgentEventType(str, Enum):

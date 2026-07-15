@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hmac
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ from fastapi import (
     FastAPI,
     Header,
     HTTPException,
+    Request,
     Response,
     WebSocket,
     WebSocketDisconnect,
@@ -52,6 +54,17 @@ from .approvals import ApprovalManager, ApprovalError, ApprovalStatus
 from .identity import DEV_ORG, DEV_USER, current_identity, verify_token, _auth_error_type
 from .runner import start_runner
 from .store import Store
+from .webhooks import (
+    MAX_WEBHOOK_BODY,
+    event_type_of,
+    header_names,
+    resolve_delivery_id,
+    verify_for_source,
+    webhook_dedup,
+    webhook_router,
+    webhook_storm,
+    within_replay_window,
+)
 
 # Identity comes from auth-service's RS256 verifier at the request boundary
 # (see .identity). DEV_USER/DEV_ORG remain the header-less fallback constants.
@@ -810,6 +823,121 @@ async def internal_scheduled_run(
     }
     background.add_task(bus.publish, SUBJECT_INBOUND, inbound, message_id=idempotency_key)
     return JSONResponse(status_code=202, content=accepted, background=background)
+
+
+# --------------------------------------------------------------- webhook ingress (§15.8)
+@app.post("/webhooks/{source}")
+async def webhook_ingress(source: str, request: Request) -> JSONResponse:
+    """Event-driven ingress — the complement to crons (§15.8). A public webhook
+    (github|sentry|slack|…) is verified, replay/dedup/storm-guarded, matched against the org's
+    event-automations, and each match is published to the bus as an UNTRUSTED, webhook-channel
+    InboundMessage (a PR title is an injection surface — the turn is tainted, §17.6.3).
+
+    Security, in order (all fail-closed):
+      • body-size cap (1 MiB) BEFORE any work → oversized = 413, dropped (OOM DoS, #3);
+      • tenant resolution → the request MUST name its org (?org=) so the secret is that org's
+        and fan-out is org-scoped; missing = 401 (#4);
+      • signature vs the per-(source, org) secret → github signs the raw body, other sources
+        use the v0 timestamp-bound scheme; bad/missing = 401 (#1, #4);
+      • ±5 min anti-replay for sources with a signed timestamp (github has none → defers to
+        its required delivery-id dedup) → 401 (#1);
+      • required delivery id for dedup → github's X-GitHub-Delivery, else sha256(signed body);
+        a redelivery is acked 200 but reprocessed at most once, and dedup is NEVER skipped (#1);
+      • storm control keyed per (source, org, automation) → a flood throttles ONLY that tenant/
+        trigger; suppressed deliveries are NOT dedup-consumed, so they stay retryable (#2);
+      • dedup-on-SUCCESS → the delivery is marked only after every publish succeeds, so a
+        mid-processing failure allows a retry instead of silently dropping the event (ADR-016)."""
+    names = header_names(source)
+
+    # 1) Body-size cap (#3) — reject an oversized body BEFORE any auth/parse work (OOM DoS).
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_WEBHOOK_BODY:
+                return _error(413, "E_VALIDATION", "webhook body exceeds the 1 MiB cap")
+        except ValueError:
+            return _error(400, "E_VALIDATION", "invalid Content-Length")
+    raw = await request.body()
+    if len(raw) > MAX_WEBHOOK_BODY:
+        return _error(413, "E_VALIDATION", "webhook body exceeds the 1 MiB cap")
+
+    # 2) Tenant resolution (#4) — the request names its org so the secret used is THAT org's
+    # and fan-out stays within it. Missing org → fail closed (no tenant → no secret).
+    org_id = request.query_params.get("org", "")
+    if not org_id:
+        return _error(401, "E_AUTH_INVALID_TOKEN", "missing org for webhook")
+
+    signature = request.headers.get(names["signature"], "")
+    ts_header = request.headers.get(names["timestamp"]) if names.get("timestamp") else None
+
+    # 3) Signature — fail-closed, per-(source, org) secret (#1, #4). An unconfigured
+    # (source, org) has no secret → denied, never open.
+    secret = webhook_router.secret_for(source, org_id)
+    if not secret or not verify_for_source(source, secret, ts_header, raw, signature):
+        return _error(401, "E_AUTH_INVALID_TOKEN", "invalid or missing webhook signature")
+
+    now = _clock()
+    # 4) Anti-replay (±5 min) for sources carrying a signed timestamp (#1). Fail-closed: a
+    # missing/stale/malformed ts is rejected. GitHub has no timestamp → its required, unique
+    # delivery id (below) is the replay defence.
+    if names.get("timestamp") and not within_replay_window(ts_header, now):
+        return _error(401, "E_AUTH_INVALID_TOKEN", "webhook timestamp outside the replay window")
+
+    # 5) Delivery id for dedup — REQUIRED, fail-closed, NEVER skipped (#1). github must send a
+    # non-empty X-GitHub-Delivery; other sources dedup on sha256 of the signed body.
+    delivery = resolve_delivery_id(source, request.headers.get(names["delivery"], ""), raw)
+    if not delivery:
+        return _error(401, "E_AUTH_INVALID_TOKEN", "missing webhook delivery id")
+
+    try:
+        payload = json.loads(raw or b"{}")
+    except json.JSONDecodeError:
+        return _error(400, "E_VALIDATION", "invalid webhook body")
+    if not isinstance(payload, dict):
+        return _error(400, "E_VALIDATION", "webhook body must be a JSON object")
+
+    # 6) Dedup — an at-least-once redelivery is acked but NOT reprocessed.
+    if webhook_dedup.seen(delivery, now):
+        return JSONResponse(status_code=200, content={"status": "duplicate", "fanned_out": 0})
+
+    event_type = event_type_of(source, request.headers, payload)
+    inbounds = webhook_router.fan_out(source, org_id, event_type, payload, delivery)
+
+    # 7) No matching automation → 200 ack, nothing published. Record the delivery as handled
+    # (a no-match is a terminal, successful outcome — a redelivery need not re-match).
+    if not inbounds:
+        webhook_dedup.mark(delivery, now)
+        return JSONResponse(status_code=200, content={"status": "no_match", "fanned_out": 0})
+
+    # 8) Storm control keyed per (source, org, automation) (#2) — a flood throttles ONLY that
+    # target. Suppressed targets are recorded for the digest (StormControl.tripped). When
+    # EVERYTHING is suppressed the delivery dedup key is NOT consumed, so the sender's retry
+    # (or a digest sweep) can still deliver — a suppressed event is never permanently lost.
+    to_publish: list[dict] = []
+    suppressed = 0
+    for inbound in inbounds:
+        storm_key = inbound.pop("_storm_key")
+        if webhook_storm.allow(storm_key, now):
+            to_publish.append(inbound)
+        else:
+            suppressed += 1
+    if not to_publish:
+        return JSONResponse(status_code=200, content={
+            "status": "storm_paused", "fanned_out": 0, "suppressed": suppressed})
+
+    # 9) Publish each InboundMessage. Synchronous (not a BackgroundTask) so dedup-on-SUCCESS
+    # holds: the delivery is marked ONLY after every publish succeeds — a publish failure
+    # returns an error WITHOUT consuming the dedup key, so the webhook retry re-processes it
+    # (mirrors the cron fire_job dedup-on-success rule, ADR-016 / §15.6).
+    try:
+        for inbound in to_publish:
+            await bus.publish(SUBJECT_INBOUND, inbound, message_id=inbound["idempotency_key"])
+    except Exception as exc:  # noqa: BLE001 — a failed publish must not consume the dedup key
+        return _error(502, "E_TOOL_UPSTREAM_ERROR", f"webhook fan-out failed: {str(exc)[:120]}")
+
+    webhook_dedup.mark(delivery, now)
+    return JSONResponse(status_code=202, content={
+        "status": "accepted", "fanned_out": len(to_publish), "suppressed": suppressed})
 
 
 app.include_router(api)

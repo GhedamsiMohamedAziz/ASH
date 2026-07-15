@@ -101,6 +101,40 @@ def test_scheduler_channel_same_pipeline_origin():
     assert task.task_jwt and task.allowed_tools
 
 
+# ------------------------------------------------------------------ webhook channel (§15.8)
+def test_webhook_channel_is_non_interactive():
+    # A webhook has no human in the loop → non-interactive origin, so require_approval fails closed.
+    task = build_task(_inbound("review la PR ouverte", channel="webhook"))
+    assert task.origin == "scheduled"
+    assert task.task_jwt and task.allowed_tools
+
+
+def test_webhook_pretaints_the_turn():
+    from app.memory_mcp import InMemoryTaint
+
+    ledger = InMemoryTaint()
+    task = build_task(_inbound("review la PR", channel="webhook"), taint=ledger)
+    # §17.6.3: the untrusted webhook input taints the turn's task_id from the start, so the Gateway
+    # reclasses any public egress (scheduled + tainted → E_GUARD_TAINTED_EGRESS).
+    assert ledger.is_tainted(task.task_id)
+
+
+def test_untrusted_flag_pretaints_even_on_other_channels():
+    from app.memory_mcp import InMemoryTaint
+
+    ledger = InMemoryTaint()
+    task = build_task(_inbound("fais X", untrusted=True), taint=ledger)
+    assert ledger.is_tainted(task.task_id)
+
+
+def test_trusted_interactive_turn_is_not_pretainted():
+    from app.memory_mcp import InMemoryTaint
+
+    ledger = InMemoryTaint()
+    task = build_task(_inbound("ouvre une PR"), taint=ledger)  # channel=web, trusted
+    assert not ledger.is_tainted(task.task_id)
+
+
 def test_on_behalf_of_team_mode():
     task = build_task(_inbound("ouvre une PR", on_behalf_of="usr_mehdi"))
     claims = jwt.verify(task.task_jwt, TASK_JWT_SECRET)

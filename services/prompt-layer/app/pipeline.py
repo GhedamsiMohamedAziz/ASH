@@ -134,7 +134,8 @@ def reapprove_task_jwt(user_id: str, org_id: str, tool: str,
 
 
 def build_task(inbound: dict, *, role: str = "member", task_id: str | None = None,
-               now: float | None = None, engine: PolicyEngine | None = None) -> AgentTask:
+               now: float | None = None, engine: PolicyEngine | None = None,
+               taint=None) -> AgentTask:
     """Run the pipeline on an InboundMessage dict → AgentTask (raises GuardrailBlocked).
 
     `engine` is the tool_policies evaluator; defaults to the seeded default engine.
@@ -165,8 +166,16 @@ def build_task(inbound: dict, *, role: str = "member", task_id: str | None = Non
         candidate_tools = filter_team_tools(_DEFAULT_TOOLS)
     allowed, approval, _groups = eng.compute_tools(inbound["org_id"], role, candidate_tools)  # stage 4
     tier, profile = _route(c.cls, c.recurrence)  # stage 5 routing
-    origin = "scheduled" if inbound.get("channel") == "scheduler" else "interactive"
+    # webhook + scheduler are both non-interactive: no human in the loop, so require_approval
+    # tools fail closed at run time (§15.8 / §9 intro). Only the interactive web/chat path can approve.
+    origin = "scheduled" if inbound.get("channel") in ("scheduler", "webhook") else "interactive"
     tid = task_id or inbound.get("task_id") or f"task_{inbound.get('message_id', '0')}"
+    # §17.6.3 + §15.8: a webhook payload is UNTRUSTED input, so the turn starts tainted — the Gateway
+    # then reclasses any egress_class=public tool (scheduled + tainted → E_GUARD_TAINTED_EGRESS, no
+    # human to approve), and any memory written this turn is source_trust=untrusted (§9.1.4). The taint
+    # is set on the SAME task_id carried in the TASK JWT, via the shared ledger (Redis in prod).
+    if taint is not None and (inbound.get("channel") == "webhook" or inbound.get("untrusted")):
+        taint.taint(tid)
     jwt_str = _sign_task_jwt(inbound["user_id"], inbound["org_id"], allowed, approval,
                              on_behalf_of, now=now, task_id=tid, origin=origin)
 
