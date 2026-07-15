@@ -1,0 +1,8 @@
+{
+  "name": "@olma/mcp-m365",
+  "version": "0.1.0",
+  "description": "Axone M365 / MS Graph MCP server (instructions.md §14)",
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.ts" },
+  "engines": { "node": ">=23" }
+}
