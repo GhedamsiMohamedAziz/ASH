@@ -3,11 +3,11 @@ Gateway — TASK_JWT auth + allowed_tools AuthZ + taint + audit — NOT opencode
 (instructions.md §10, §12, §13). This closes the "Gateway-in-the-loop" gap.
 
 WIRING (all keyless/offline, no network, no API keys):
-  • the REAL MCP Gateway core (buildGateway() with its StubBackend) fronted by a thin MCP
-    Streamable-HTTP adapter (tests/integration/mcp_gateway_http.ts). The adapter adds ONLY MCP
-    JSON-RPC framing; every tools/call runs the real gw.call() chain (JWT verify, allowed_tools,
-    taint, approval, DLP, audit). It exists because the shipped gateway speaks a bespoke REST
-    surface (POST /v1/tool/call), not MCP — so opencode's MCP client cannot reach it directly;
+  • the REAL MCP Gateway server (services/mcp-gateway/src/server.ts) with its StubBackend. The
+    server's own POST /mcp endpoint speaks MCP Streamable-HTTP; every tools/call delegates to the
+    real gw.call() chain (JWT verify, allowed_tools, taint, approval, DLP, audit). opencode's MCP
+    client reaches the shipped gateway directly — no test adapter (the earlier dev bridge has been
+    superseded by, and removed in favour of, the real /mcp endpoint);
   • the REAL llm-proxy in KEYLESS stub mode; LLM_PROXY_STUB_TOOL names the Gateway tool, so the
     stub emits exactly one tool_call for it, then finishes with text once the tool result returns;
   • a REAL `opencode serve` configured with the Gateway as a remote MCP server (Authorization:
@@ -49,7 +49,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _LLM_PROXY_DIR = _REPO / "services" / "llm-proxy"
 _BACKEND_DIR = _REPO / "services" / "backend-core"
 _SHARED_PY = _REPO / "packages" / "shared-py"
-_ADAPTER_TS = _REPO / "tests" / "integration" / "mcp_gateway_http.ts"
+_GATEWAY_DIR = _REPO / "services" / "mcp-gateway"
 
 # The runner lives in services/backend-core; make it importable without a conftest.
 sys.path.insert(0, str(_BACKEND_DIR))
@@ -118,15 +118,17 @@ def stack(tmp_path):
 
     task_jwt = _mint_task_jwt()
 
-    # --- 1) Real MCP Gateway core behind the MCP Streamable-HTTP adapter (keyless StubBackend) ---
-    adapter_port = _free_port()
-    adapter_env = {**os.environ, "PORT": str(adapter_port)}
+    # --- 1) The REAL MCP Gateway server (node src/server.ts) — its own POST /mcp endpoint,
+    #        StubBackend + in-memory taint, keyless. Not a test adapter: the shipped server now
+    #        speaks MCP Streamable-HTTP, so opencode's MCP client reaches it directly. ---
+    gw_port = _free_port()
+    gw_env = {**os.environ, "PORT": str(gw_port)}
     # OLMA_ENV/GITHUB_TOKEN intentionally unset → dev HS256 secret + StubBackend (offline).
-    adapter_env.pop("GITHUB_TOKEN", None)
-    adapter_env.pop("OLMA_ENV", None)
-    adapter_env.pop("REDIS_URL", None)  # in-memory taint keeps it single-process/self-contained
-    _spawn("adapter", ["node", str(_ADAPTER_TS)], cwd=_REPO, env=adapter_env)
-    adapter_base = f"http://127.0.0.1:{adapter_port}"
+    gw_env.pop("GITHUB_TOKEN", None)
+    gw_env.pop("OLMA_ENV", None)
+    gw_env.pop("REDIS_URL", None)  # in-memory taint keeps it single-process/self-contained
+    _spawn("gateway", ["node", "src/server.ts"], cwd=_GATEWAY_DIR, env=gw_env)
+    adapter_base = f"http://127.0.0.1:{gw_port}"
     _wait_http(f"{adapter_base}/healthz")
 
     # --- 2) llm-proxy KEYLESS stub; emit a tool_call for the Gateway tool, args satisfy its schema ---
@@ -153,7 +155,7 @@ def stack(tmp_path):
                 "models": {"stub-model": {"name": "Stub Model"}},
             }
         },
-        # The crux: opencode's MCP client connects to the REAL Gateway (via the adapter's /mcp),
+        # The crux: opencode's MCP client connects to the REAL Gateway server's /mcp endpoint,
         # presenting the TASK_JWT. opencode resolves config at load, so the token is embedded now.
         "mcp": {
             "mcp-gateway": {

@@ -89,6 +89,15 @@ export class McpGateway {
     this.audit.push(e);
   }
 
+  // Verify a TASK JWT and return its allowed_tools — the SAME verify path call() uses (this.verifyToken),
+  // never a parallel one. Backs the MCP tools/list surface so listing reflects ONLY the tools the token
+  // allows and stays fail-closed: any JWT problem throws (the caller maps it to E_AUTH_INVALID_TOKEN and
+  // leaks no catalog to an unauthorized token). §9.4/§13.
+  verifyAllowedTools(taskJwt: string): string[] {
+    const claims = this.verifyToken(taskJwt); // throws JWTError on any signature/claim problem
+    return (claims.allowed_tools ?? []) as string[];
+  }
+
   async call(req: ToolCall): Promise<GatewayResult> {
     let claims: Record<string, any>;
     try {

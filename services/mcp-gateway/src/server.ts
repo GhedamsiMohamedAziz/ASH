@@ -8,6 +8,7 @@ import { RestBackend } from "../../mcp-servers/github/src/rest.ts";
 import { CredentialResolver, InMemoryVault, CredentialMissing } from "./vault.ts";
 import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
 import { ReloadingJwks, DEFAULT_JWKS_RELOAD_SECONDS } from "./jwks-reload.ts";
+import { handleMcpRpc, bearer } from "./mcp.ts";
 
 // Module-level Vault + resolver: the ONE credential store shared by the gateway's per-call
 // injection (resolveCredential) and the HTTP connect surface (POST /v1/connect). Storing a token
@@ -169,6 +170,55 @@ export function createGatewayServer(gw = buildGateway()) {
       ]);
       const connections = [...providers].map((provider) => ({ provider, connected: true }));
       return send(200, { connections });
+    }
+    // MCP Streamable-HTTP surface (instructions.md §13): the protocol opencode actually speaks
+    // (sandbox/opencode.json → { type: remote, url: .../mcp }). Additive to the REST routes above.
+    // Every tools/call is delegated to gw.call() (see mcp.ts), so the FULL auth chain runs unchanged;
+    // Authorization: Bearer <TASK_JWT> is threaded into taskJwt — no/bad token fails closed, no bypass.
+    if (req.url === "/mcp") {
+      // The optional server->client SSE channel is not offered (we push no notifications). The MCP
+      // StreamableHTTP client tolerates 405 here and proceeds over POST (JSON-response mode).
+      if (req.method === "GET") {
+        return send(405, { jsonrpc: "2.0", error: { code: -32000, message: "no SSE stream" } });
+      }
+      if (req.method === "POST") {
+        // Fail-closed resource bounds: the gateway is the single egress point for every sandbox,
+        // so an unbounded body or batch is a shared-availability DoS (parsing precedes auth).
+        const MAX_BODY = 1 << 20; // 1 MiB
+        const MAX_BATCH = 50;
+        let raw = "";
+        for await (const chunk of req) {
+          raw += chunk;
+          if (raw.length > MAX_BODY) {
+            return send(413, { jsonrpc: "2.0", error: { code: -32000, message: "payload too large" } });
+          }
+        }
+        let body: any;
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          return send(400, { jsonrpc: "2.0", error: { code: -32700, message: "parse error" } });
+        }
+        const taskJwt = bearer(req.headers["authorization"]);
+        const batched = Array.isArray(body);
+        if (batched && body.length > MAX_BATCH) {
+          return send(400, { jsonrpc: "2.0", error: { code: -32600, message: "batch too large" } });
+        }
+        const msgs = batched ? body : [body];
+        const responses: any[] = [];
+        for (const m of msgs) {
+          const r = await handleMcpRpc(gw, m, taskJwt);
+          if (r) responses.push(r);
+        }
+        // An all-notification batch (e.g. notifications/initialized) yields no responses → 202.
+        if (responses.length === 0) {
+          res.writeHead(202);
+          return res.end();
+        }
+        return send(200, batched ? responses : responses[0]);
+      }
+      res.writeHead(405);
+      return res.end();
     }
     send(404, { error: { code: "E_NOT_FOUND", message: "not found" } });
   });
