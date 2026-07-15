@@ -77,6 +77,44 @@ def test_new_secret_shapes_blocked(secret):
         check_write(secret)
 
 
+@pytest.mark.parametrize("secret", [
+    # #1 live secret shapes the DLP previously missed
+    "sk_live_51Habcdefghijklmnopqrstuvwx",          # Stripe live secret key (underscore form)
+    "sk_test_51Habcdefghijklmnop",                  # Stripe test secret key
+    "rk_live_abcdefghijklmnop",                     # Stripe restricted key
+    "sk-proj-abcdefghij1234567890abcdef",           # OpenAI project key (proj breaks sk- rule)
+    "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",  # underscored label
+    "ya29.a0AfH6SMBxabcdefghijklmnopqrstuvwxyz",    # Google OAuth access token
+])
+def test_live_secret_shapes_blocked(secret):
+    with pytest.raises(MemoryGuardBlocked):
+        check_write(secret)
+
+
+@pytest.mark.parametrize("self_mem", [
+    # #3 first-person self-referential memories must NOT be blocked as third-party facts
+    "I want to negotiate my salary",
+    "I'm dealing with burnout",
+    "I'm looking for another job",
+    "Track my salary review date",
+])
+def test_self_referential_memories_pass(self_mem):
+    check_write(self_mem)  # must not raise
+
+
+@pytest.mark.parametrize("tp", [
+    # #3 real third-party facts must still block: a role-noun subject overrides a
+    # first-person possessive ("mon collègue …"), and bare/named predicates still fire.
+    "mon collègue est en burnout",
+    "mon collègue cherche un autre job",
+    "David's salary is 90k",
+    "cherche un autre job dès que possible",
+])
+def test_third_party_still_blocked_after_self_fix(tp):
+    with pytest.raises(MemoryGuardBlocked):
+        check_write(tp)
+
+
 @pytest.mark.parametrize("tp", [
     "Éric cherche un autre job",              # accented name
     "Léa va partir en fin d'année",

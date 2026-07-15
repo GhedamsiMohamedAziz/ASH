@@ -17,25 +17,35 @@ from dataclasses import dataclass, field
 
 # --- 1. injection ---------------------------------------------------------
 _INJECTION = [
-    # EN core. `ignore … instructions` tolerates bounded filler words between the
-    # verb and its object ("ignore your previous instructions", "kindly ignore any
-    # previous instructions") without matching unrelated "ignore the noise …".
-    re.compile(r"ignore\s+(\w+\s+){0,3}instructions", re.I),
+    # EN core. `ignore … instructions` spans bounded filler between the verb and its
+    # object with a non-greedy char-capped run — so "ignore absolutely all of the
+    # previous instructions" / "ignore each and every one of the previous instructions"
+    # hit, while unrelated "ignore the noise …" (no "instructions") does not.
+    re.compile(r"ignore\b[\w\s,'-]{0,60}?\binstructions\b", re.I),
+    # Synonym objects that carry no literal "instructions"/"prompt".
+    re.compile(r"disregard (?:the )?(?:text |context )?above", re.I),
+    re.compile(r"forget what (?:I|you) (?:told|said)", re.I),
+    re.compile(r"prior (?:directions|directives|rules)", re.I),
     re.compile(r"disregard (your|the) (system )?prompt", re.I),
     re.compile(r"reveal (your|the) (system )?(prompt|instructions)", re.I),
-    re.compile(r"you are now (a|an|in) ", re.I),
-    # Bare persona/jailbreak ("you are now DAN/root", not "you are now on the waitlist").
-    re.compile(r"you are now\b.{0,20}\b(dan|root|jailbroken|jailbreak|unrestricted|god\s*mode|no restrictions?|do anything now|developer mode)\b", re.I),
+    # Persona/jailbreak. The bare "you are now <article>" rule was over-broad (blocked
+    # "you are now a premium member" / "you are now in position 3"); require a jailbreak
+    # object after the article.
+    re.compile(r"you are now\b.{0,20}\b(dan|root|jailbroken|jailbreak|unrestricted|god\s*mode|no (?:restrictions?|rules?)|do anything now|developer mode|admin|evil)\b", re.I),
     re.compile(r"\bact as\b.{0,20}\b(an? )?(unrestricted|jailbroken|dan|uncensored|evil) ", re.I),
     re.compile(r"from now on\b.{0,40}\b(no (restrictions?|rules?|limits?|filters?)|unrestricted|you have no restrictions?)\b", re.I),
     re.compile(r"\bpretend\b.{0,30}\b(jailbroken|unrestricted|dan|uncensored|no restrictions?)\b", re.I),
     re.compile(r"(exfiltrate|leak) (the |all )?(secret|token|credential|data)", re.I),
     re.compile(r"print (your|the) (system )?(prompt|instructions|config)", re.I),
     re.compile(r"bypass (the )?(guardrails|permissions|policy)", re.I),
-    re.compile(r"(new|updated) (system )?instructions?\s*[:：]", re.I),
+    # "(new|updated) instructions:" — fires only as a leading fake directive header, or
+    # when tagged with a system/role token, so benign framing ("Here are the new
+    # instructions: summarize the report") passes.
+    re.compile(r"(?:^|\n)\s*(new|updated) (system )?instructions?\s*[:：]", re.I),
+    re.compile(r"\b(system|role|assistant) (?:(?:new|updated) )?instructions?\s*[:：]", re.I),
     # FR variants (the corpus is bilingual, §20.2). `ignore … instructions` above
     # already covers "ignore (toutes) les instructions précédentes" (EN verb spelling).
-    re.compile(r"oublie[rz]?\s+(\w+\s+){0,3}instructions", re.I),
+    re.compile(r"oublie[rz]?\b[\w\s,'-]{0,60}?\binstructions\b", re.I),
     re.compile(r"(révèle|montre|affiche|dévoile|donne)(-?(moi|nous))?\s+(ton|le|la|votre|vos|tes|mes|ce)\s+.{0,20}(prompt|instructions?|syst[eè]me)", re.I),
     re.compile(r"tu es maintenant\s+.{0,40}(sans (restrictions?|limites?|r[eè]gles?|garde-fous?)|non restreint|jailbreak\w*|débridé)", re.I),
     re.compile(r"(contourne|désactive|neutralise)[rz]?\s+(les?\s+|la\s+|des\s+)?(garde[- ]?fous?|s[eé]curit[eé]s?|restrictions?|protections?)", re.I),

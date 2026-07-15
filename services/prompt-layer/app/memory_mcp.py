@@ -45,27 +45,51 @@ _SECRET = re.compile(
     r"|github_pat_[A-Za-z0-9_]{22,}"
     r"|xox[baprs]-[A-Za-z0-9-]{10,}"                    # Slack
     r"|sk-ant-[A-Za-z0-9_-]{20,}"                       # Anthropic
+    r"|sk-proj-[A-Za-z0-9_-]{20,}"                      # OpenAI project key (proj breaks the sk- rule)
     r"|sk-[A-Za-z0-9]{20,}"                             # OpenAI
+    r"|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}"        # Stripe secret/restricted keys (underscore form)
     r"|glpat-[A-Za-z0-9_-]{20,}"                        # GitLab PAT
     r"|AIza[0-9A-Za-z_-]{35,}"                          # Google API key
+    r"|ya29\.[A-Za-z0-9_-]{20,}"                        # Google OAuth access token
     r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"  # JWT (3-segment)
     r"|[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@"        # user:pass@host URL creds
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r"|\b(password|secret|api[_-]?key)\s*[:=]\s*\S+)",
+    # Label rule: broadened + no leading \b so underscored labels (AWS_SECRET_ACCESS_KEY=...) hit too.
+    r"|(?:password|secret|api[_-]?key|access[_-]?key)\w*\s*[:=]\s*\S+)",
     re.IGNORECASE)
 
 # Third-party-fact heuristic (§9.1.3): a statement about *another person*'s private
 # situation (job hunting, health, salary, layoff, bonus...) learned from read content.
-# The signal is the sensitive predicate itself — not "a capitalized leading word",
-# which under re.IGNORECASE degenerated to ANY word and over-blocked self-referential
-# memories. A name is neither necessary ("cherche un autre job dès que possible") nor
-# sufficient ("Marie is a great colleague" must pass): only the predicate triggers.
-_THIRD_PARTY = re.compile(
+# The sensitive predicate is necessary but NOT sufficient: a bare predicate about
+# ONESELF ("I'm dealing with burnout", "Track my salary review date") is a legitimate
+# self-referential memory and must pass. So a predicate blocks only when it carries a
+# third-party SUBJECT (a role noun like "collègue") OR when no first-person marker is
+# present at all (bare "cherche un autre job dès que possible", or a named subject
+# "Karim …" / "David's salary …" which never carries a first-person marker).
+_THIRD_PARTY_PREDICATE = re.compile(
     r"(cherche un autre job|cherche un nouveau|looking for another job|wants to leave|"
     r"is quitting|is sick|va démissionner|va partir|est malade|"
     r"salaire|salary|touche une prime|"
     r"burnout|dépression|depression|être licencié|licenciement)",
     re.IGNORECASE)
+
+# An explicit other-person subject — forces a block even when a first-person possessive
+# is nearby ("mon collègue est en burnout": "mon" is first-person but "collègue" is not).
+_THIRD_PARTY_SUBJECT = re.compile(
+    r"\b(coll[èe]gues?|colleagues?|co-?workers?|managers?|boss|patron|voisins?)\b",
+    re.IGNORECASE)
+
+# First-person markers (EN + FR): a bare sensitive predicate about oneself must not block.
+_FIRST_PERSON = re.compile(r"\b(I|I'm|my|me|mon|ma|mes|je|j')\b", re.IGNORECASE)
+
+
+def _is_third_party_private(content: str) -> bool:
+    if not _THIRD_PARTY_PREDICATE.search(content):
+        return False
+    if _THIRD_PARTY_SUBJECT.search(content):
+        return True  # explicit other-person subject → third-party fact
+    # No explicit other-person subject: block unless it is clearly about oneself.
+    return _FIRST_PERSON.search(content) is None
 
 
 class MemoryGuardBlocked(Exception):
@@ -78,7 +102,7 @@ def check_write(content: str) -> None:
     """Raise MemoryGuardBlocked if the content must never be stored (§9.1.3)."""
     if _SECRET.search(content):
         raise MemoryGuardBlocked("secret/token — never stored in memory")
-    if _THIRD_PARTY.search(content):
+    if _is_third_party_private(content):
         raise MemoryGuardBlocked("third-party private fact — not stored")
 
 
