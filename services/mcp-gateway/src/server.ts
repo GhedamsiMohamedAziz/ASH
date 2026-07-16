@@ -19,7 +19,9 @@ import { ReloadingJwks, DEFAULT_JWKS_RELOAD_SECONDS } from "./jwks-reload.ts";
 import { handleMcpRpc, bearer, registerDynamicTools, type McpToolDef } from "./mcp.ts";
 import {
   mcpmarketSearchHandler, MCPMARKET_META, registerRemoteServer, mcpmarketCatalog,
+  type CatalogEntry,
 } from "./remote-mcp.ts";
+import { readFileSync, writeFileSync } from "node:fs";
 
 // Module-level Vault + resolver: the ONE credential store shared by the gateway's per-call
 // injection (resolveCredential) and the HTTP connect surface (POST /v1/connect). Storing a token
@@ -316,6 +318,62 @@ function stringifyHandler(h: (a: any, ctx: any) => Promise<unknown>): ToolHandle
 // (injected via ctx.credential, never ambient env — confused-deputy guard, §3.2); the "vault:stub"
 // sentinel (no stored token, offline/tests) → StubBackend, so the keyless dev/test path is unchanged.
 // Pass `githubBackend` to inject a fetch-mocked RestBackend in tests (used for every call, keyless).
+// mcpmarket learned-skill DURABILITY (opt-in via MCPMARKET_STATE_PATH). When set, each successful
+// auto-mount records the catalog server id to a small JSON file, and the gateway RE-MOUNTS them on
+// boot — so a restart no longer drops learned skills (the agent needn't re-register). Unset (default)
+// → in-memory only, exactly as before: no file writes, no behavior change, no regression risk.
+function mcpmarketStatePath(): string | null {
+  return process.env.MCPMARKET_STATE_PATH || null;
+}
+function loadRegisteredIds(): string[] {
+  const p = mcpmarketStatePath();
+  if (!p) return [];
+  try {
+    const v = JSON.parse(readFileSync(p, "utf8"));
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch { return []; }  // absent/corrupt file → nothing to rehydrate
+}
+function persistRegisteredId(id: string): void {
+  const p = mcpmarketStatePath();
+  if (!p) return;
+  try {
+    const ids = loadRegisteredIds();
+    if (!ids.includes(id)) writeFileSync(p, JSON.stringify([...ids, id]));
+  } catch { /* best-effort: a persist failure must never fail the mount */ }
+}
+
+// Mount ONE catalog server onto the gateway (connect → register its tools → surface them in the MCP
+// catalog). Shared by the request_register handler AND the boot rehydrate so both apply the SAME SSRF
+// policy + dynamic-tools wiring. Returns the mounted tool defs; throws on any connect failure.
+async function mountCatalogServer(gw: McpGateway, entry: CatalogEntry): Promise<McpToolDef[]> {
+  let host = "";
+  try { host = new URL(entry.mcpUrl).hostname; } catch { /* invalid url → validateUrl rejects it */ }
+  const devHosts = (process.env.MCPMARKET_DEV_ALLOW_HOSTS ?? "")
+    .split(",").map((h) => h.trim()).filter(Boolean);
+  const result = await registerRemoteServer(
+    gw, { id: entry.id, name: entry.name, mcpUrl: entry.mcpUrl },
+    { skipSsrf: devHosts.includes(host) });
+  const defs: McpToolDef[] = result.tools.map((t) => ({
+    name: t.alias, gwTool: t.gwTool,
+    description: t.description ?? `${entry.name}: ${t.remoteName}`,
+    inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
+  }));
+  registerDynamicTools(defs);
+  return defs;
+}
+
+// Re-mount every persisted learned skill (opt-in). Best-effort: a server that is down at boot is
+// simply skipped and can be re-registered on demand. Returns how many re-mounted.
+export async function rehydrateMcpmarket(gw: McpGateway): Promise<{ mounted: number; total: number }> {
+  const ids = loadRegisteredIds();
+  if (!ids.length) return { mounted: 0, total: 0 };
+  const results = await Promise.allSettled(ids.map((id) => {
+    const entry = mcpmarketCatalog().find((e) => e.id === id);
+    return entry ? mountCatalogServer(gw, entry) : Promise.reject(new Error(`unknown catalog id ${id}`));
+  }));
+  return { mounted: results.filter((r) => r.status === "fulfilled").length, total: ids.length };
+}
+
 export function buildGateway(
   opts: {
     githubBackend?: GithubBackend;
@@ -455,24 +513,8 @@ export function buildGateway(
     const entry = mcpmarketCatalog().find((e) => e.id === serverId);
     if (!entry) return JSON.stringify({ status: "unknown_server", serverId });
     try {
-      // Dev-only SSRF opt-out for EXPLICITLY allow-listed hosts (e.g. a localhost demo skill). The
-      // loopback/RFC1918 blocks in validateUrl are otherwise UNCONDITIONAL, so a local example server
-      // can't be mounted without this. Off by default (empty env) → SSRF stays fully on for EVERY
-      // catalog server, including the real ones. Prod never sets MCPMARKET_DEV_ALLOW_HOSTS.
-      let host = "";
-      try { host = new URL(entry.mcpUrl).hostname; } catch { /* invalid url → validateUrl rejects it */ }
-      const devHosts = (process.env.MCPMARKET_DEV_ALLOW_HOSTS ?? "")
-        .split(",").map((h) => h.trim()).filter(Boolean);
-      const result = await registerRemoteServer(
-        gw, { id: entry.id, name: entry.name, mcpUrl: entry.mcpUrl },
-        { skipSsrf: devHosts.includes(host) });
-      const defs: McpToolDef[] = result.tools.map((t) => ({
-        name: t.alias,
-        gwTool: t.gwTool,
-        description: t.description ?? `${entry.name}: ${t.remoteName}`,
-        inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
-      }));
-      registerDynamicTools(defs);
+      const defs = await mountCatalogServer(gw, entry);  // connect + register (SSRF/cap enforced inside)
+      persistRegisteredId(entry.id);  // durability (opt-in): re-mounted automatically on the next boot
       return JSON.stringify({
         status: "connected", server: entry.id, tools: defs.map((d) => d.name),
         note: "Skill connected. Its tools are available from your NEXT message.",
@@ -607,8 +649,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Rehydrate persisted connections BEFORE serving so the very first tool call after a restart can
   // resolve a previously-connected token (§13.2). Best-effort: a load failure logs and the gateway
   // still boots (fresh in-memory), never blocking startup.
+  const bootGw = buildGateway();
   resolver.load().then(({ loaded, skipped }) => {
     if (loaded || skipped) console.log(`mcp-gateway rehydrated ${loaded} connection(s), skipped ${skipped}`);
   }).catch(() => {});
-  createGatewayServer().listen(port, () => console.log(`mcp-gateway on :${port}`));
+  // Re-mount learned mcpmarket skills persisted before a restart (opt-in via MCPMARKET_STATE_PATH).
+  rehydrateMcpmarket(bootGw).then(({ mounted, total }) => {
+    if (total) console.log(`mcp-gateway re-mounted ${mounted}/${total} learned mcpmarket skill(s)`);
+  }).catch(() => {});
+  createGatewayServer(bootGw).listen(port, () => console.log(`mcp-gateway on :${port}`));
 }
