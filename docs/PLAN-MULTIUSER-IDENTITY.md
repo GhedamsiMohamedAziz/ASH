@@ -64,6 +64,26 @@ features shipped against the static JWT. Both must be reconciled or they regress
 **Prerequisite:** prompt-layer (`:8010`) must be **running** — it is currently down, so the
 per-turn path silently falls back to the static JWT. Add it to the run scripts + a health check.
 
+## 3b. Progress + findings
+
+**Step 1 — DONE (verified).** prompt-layer stood up on `:8010` (dev secret matches the gateway).
+`/v1/plan` mints a per-turn TASK JWT **bound to the request's user**: `usr_alice`→`sub:usr_alice`/
+`org_9`, `usr_bob`→`sub:usr_bob`/`org_3`, each `origin:interactive` with a per-message `task_id`
+(→ fresh taint per turn, the sticky-taint fix). The core minting mechanism works.
+
+**Finding → refines Step 2 (a security decision).** The per-turn JWT's `allowed_tools` came back
+**empty** for `org_9`/`org_3`: the policy engine matches `org_id` **exactly** (tenant isolation,
+§17.6.2), and only `org_1` is seeded in the dev default engine. Two ways to give a real-org user
+its tools:
+- **(A) DB-loaded per-org policies — RECOMMENDED (prod-correct).** Wire `/v1/plan` to
+  `policy.load_from_postgres(dsn, org_id)` (backend-core already reads `tool_policies`); seed
+  `org_9`'s rows. Keeps real per-tenant isolation. More work.
+- **(B) Org-agnostic dev default (`org "*"`).** Fast, but **weakens tenant isolation** (any org
+  gets the defaults) and churns the 61 `org_1` tests. Not acceptable for a security property.
+
+Also in Step 2, regardless of A/B: add `mcpmarket_*` to `allowed_tools` (a deliberate autolearn
+grant, not from the policy matrix) so learned skills stay authorized under the per-turn JWT.
+
 ## 4. Implementation steps (ordered, verify each)
 
 1. **Stand up prompt-layer** (`:8010`) in the local run scripts; assert `/v1/plan` mints a JWT
