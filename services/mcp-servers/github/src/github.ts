@@ -67,6 +67,10 @@ export interface GithubBackend {
   readFile(repo: string, path: string, ctx: ToolContext): Promise<string>;
   createPr(repo: string, head: string, base: string, title: string, ctx: ToolContext): Promise<PullRequest>;
   mergePr(repo: string, number: number, ctx: ToolContext): Promise<{ merged: boolean; sha: string }>;
+  // Write surface (egressClass "public", approval-gated): create/update a file = a real commit.
+  createOrUpdateFile(
+    repo: string, path: string, content: string, message: string, ctx: ToolContext, branch?: string,
+  ): Promise<{ action: "created" | "updated"; commit: string; url: string; path: string }>;
   // state is optional + trailing so the pre-existing listIssues(repo, ctx) call sites stay valid.
   listIssues(repo: string, ctx: ToolContext, state?: string): Promise<Array<{ number: number; title: string }>>;
   // Read surface (all read-only, egressClass "none"): the caller's real OAuth token, injected per
@@ -97,6 +101,13 @@ export class StubBackend implements GithubBackend {
   }
   async mergePr(_repo: string, number: number): Promise<{ merged: boolean; sha: string }> {
     return { merged: true, sha: `sha_${number.toString(16)}` };
+  }
+  async createOrUpdateFile(
+    repo: string, path: string, _content: string, _message: string, _ctx?: ToolContext, branch?: string,
+  ): Promise<{ action: "created" | "updated"; commit: string; url: string; path: string }> {
+    const n = ++this.prSeq;
+    return { action: "created", commit: `sha_${n.toString(16)}`, path,
+             url: `https://github.com/${repo}/blob/${branch ?? "main"}/${path}` };
   }
   async listIssues(_repo: string, _ctx?: ToolContext, _state?: string): Promise<Array<{ number: number; title: string }>> {
     return [
@@ -163,6 +174,13 @@ export class GithubMcp {
         return { ...pr, trailer: trailerFor(ctx) };
       },
       "github.merge_pr": (a, ctx) => this.backend.mergePr(String(a.repo), Number(a.number), ctx),
+      "github.create_or_update_file": async (a, ctx) => {
+        const r = await this.backend.createOrUpdateFile(
+          String(a.repo), String(a.path), String(a.content ?? ""),
+          String(a.message ?? "Update via Axone agent"), ctx,
+          a.branch ? String(a.branch) : undefined);
+        return { ...r, trailer: trailerFor(ctx) };
+      },
       "github.list_issues": (a, ctx) => this.backend.listIssues(ghRepo(a), ctx, ghState(a)),
       // Read surface — each uses the caller's real OAuth token (ctx.credential) on the RestBackend path.
       "github.list_repos": (_a, ctx) => this.backend.listRepos(ctx),

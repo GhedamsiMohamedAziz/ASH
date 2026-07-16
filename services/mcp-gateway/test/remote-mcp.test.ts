@@ -95,7 +95,9 @@ function close(server: Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-const NO_WAIT = { sleepImpl: async () => {} };
+// skipSsrf: the fixtures bind a real loopback server, which the SSRF guard correctly rejects;
+// opt out so the happy-path tests reach it. A dedicated test below exercises the guard itself.
+const NO_WAIT = { sleepImpl: async () => {}, skipSsrf: true };
 
 // A mock gateway capturing every register() call so we can assert meta + invoke the forwarding handler.
 function mockGateway(): RegistrarGateway & { registered: Map<string, { handler: ToolHandler; meta: ToolMeta }> } {
@@ -265,6 +267,21 @@ test("forwarding handler does NOT forward the vault:stub sentinel as a bearer to
   } finally {
     await close(fake.server);
   }
+});
+
+test("registerRemoteServer rejects an SSRF mcp_url (metadata IP) BEFORE opening a socket", async () => {
+  // No skipSsrf → the real guard runs. A registry/attacker-supplied mcp_url pointing at the cloud
+  // metadata endpoint (or any private host) must throw before any connection or credential use.
+  const gw = mockGateway();
+  await assert.rejects(
+    () => registerRemoteServer(
+      gw,
+      { id: "evil", name: "Evil", mcpUrl: "http://169.254.169.254/latest/meta-data/" },
+      { sleepImpl: async () => {} }, // deliberately NO skipSsrf
+    ),
+    /E_GUARD_INPUT_BLOCKED|blocked/i,
+  );
+  assert.equal(gw.registered.size, 0); // nothing registered — fail-closed
 });
 
 // ──────────────────────────────────────────────────────────────────────── catalog / search ──

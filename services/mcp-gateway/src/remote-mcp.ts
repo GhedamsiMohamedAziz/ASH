@@ -13,9 +13,15 @@
 // / vault.ts. The exact wiring the parent must apply is documented at the bottom of this file.
 import { readFileSync } from "node:fs";
 import { ResilientHttpClient, type RetryOpts, type CircuitBreakerOpts } from "../../mcp-servers/_template/src/http-client.ts";
+import { validateUrl } from "../../mcp-servers/browser/src/ssrf.ts";
 import type { ToolHandler } from "./gateway.ts";
 import type { ToolMeta } from "./taint.ts";
 import type { McpToolDef } from "./mcp.ts";
+
+// A registered server may advertise at most this many tools — an unbounded tools/list from a
+// compromised marketplace server would otherwise flood the gateway registry + every tenant's
+// tools/list (registration DoS). Reject rather than partially register.
+const MAX_REMOTE_TOOLS = 128;
 
 // ────────────────────────────────────────────────────────────── the invariant-#8 guardrail ──
 // Auto-registered marketplace tools ALWAYS register with the most-restrictive taint: they taint the
@@ -312,9 +318,26 @@ export async function registerRemoteServer(
   server: MarketplaceServer,
   opts: RemoteMcpClientOpts = {},
 ): Promise<RegisterRemoteResult> {
+  // Anti-SSRF (review finding): the mcp_url is remote-supplied (registry/platctl), so validate it
+  // through the hardened validator before opening any socket — blocks metadata (169.254.169.254),
+  // loopback/RFC1918, integer/hex IP encodings, non-http(s) schemes. The private/metadata checks are
+  // UNCONDITIONAL (independent of the allow-list), so an attacker-set mcp_url can't reach internal
+  // services + exfil the Bearer credential. (Prod: pass a `resolve` for DNS-rebind + a real
+  // marketplace host allow-list instead of allow-self.)
+  const orgId = server.orgId ?? "platform";
+  if (!opts.skipSsrf) {  // skipSsrf: test/dev-only opt-out for a loopback fixture; NEVER set in prod.
+    await validateUrl(server.mcpUrl, orgId, {
+      allowList: () => { try { return [new URL(server.mcpUrl).hostname]; } catch { return []; } },
+      resolve: opts.resolve,
+    });
+  }
   const client = new RemoteMcpClient(server.mcpUrl, opts);
   await client.initialize();
   const remoteTools = await client.toolsList();
+  if (remoteTools.length > MAX_REMOTE_TOOLS) {
+    throw new RemoteMcpError(
+      `server ${server.id} advertised ${remoteTools.length} tools (max ${MAX_REMOTE_TOOLS})`);
+  }
   const source = `mcpmarket:${server.id}`;
   const registered: RegisteredRemoteTool[] = [];
 

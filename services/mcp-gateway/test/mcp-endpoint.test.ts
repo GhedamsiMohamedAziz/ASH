@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { buildGateway, createGatewayServer } from "../src/server.ts";
 import type { McpGateway } from "../src/gateway.ts";
+import { toolAllowed } from "../src/gateway.ts";
+import { registerDynamicTools } from "../src/mcp.ts";
 import { sign } from "../../../packages/shared-ts/src/jwt.ts";
 
 const SECRET = "dev-task-jwt-secret";
@@ -157,4 +159,48 @@ test("GET /mcp is handled (405, no SSE stream) — REST routes preserved", withS
   // And a preserved REST route still works alongside the new endpoint.
   const health = await fetch(`http://127.0.0.1:${port}/healthz`);
   assert.equal(health.status, 200);
+}));
+
+// ───────────────────────────────────────────── mcpmarket autolearn (autonomous, wildcard authz) ──
+test("toolAllowed: exact match, mcpmarket_* wildcard, and non-broadening", () => {
+  // Exact match is the norm for first-party tools.
+  assert.equal(toolAllowed(["github.list_repos"], "github.list_repos"), true);
+  assert.equal(toolAllowed(["github.list_repos"], "github.merge_pr"), false);
+  // The mcpmarket_* wildcard authorizes AUTO-MOUNTED marketplace tools only.
+  const a = ["github.list_repos", "mcpmarket_*"];
+  assert.equal(toolAllowed(a, "mcpmarket_linear.list_issues"), true);
+  assert.equal(toolAllowed(a, "mcpmarket_stripe.create_refund"), true);
+  // …and does NOT broaden anything else: other first-party tools stay exact-match,
+  // and the dotted meta-tools (mcpmarket.search) are not under the underscore prefix.
+  assert.equal(toolAllowed(a, "github.merge_pr"), false);
+  assert.equal(toolAllowed(a, "mcpmarket.search"), false);
+  // A bare "*" is inert (length>1 guard) — a malformed token can't wildcard-authorize everything.
+  assert.equal(toolAllowed(["*"], "github.merge_pr"), false);
+});
+
+test("tools/list surfaces an auto-mounted tool ONLY for a token with the mcpmarket_* wildcard", withServer(async (server) => {
+  // Simulate a completed autolearn mount: the register handler records the def here.
+  registerDynamicTools([{
+    name: "mcpmarket_demo_ping", gwTool: "mcpmarket_demo.ping",
+    description: "demo mounted tool", inputSchema: { type: "object" },
+  }]);
+  // A normal token (no wildcard) must NOT see the learned tool — exact-match still governs.
+  const narrow = await rpc(server, { jsonrpc: "2.0", id: 20, method: "tools/list" },
+    taskJwt({ allowed_tools: ["github.search"] }));
+  const narrowNames = narrow.json.result.tools.map((t: any) => t.name);
+  assert.equal(narrowNames.includes("mcpmarket_demo_ping"), false);
+  // A token carrying mcpmarket_* sees it (autolearn surfaced next-turn).
+  const wide = await rpc(server, { jsonrpc: "2.0", id: 21, method: "tools/list" },
+    taskJwt({ allowed_tools: ["github.search", "mcpmarket_*"] }));
+  const wideNames = wide.json.result.tools.map((t: any) => t.name);
+  assert.equal(wideNames.includes("mcpmarket_demo_ping"), true);
+}));
+
+test("mcpmarket_request_register for an unknown server id fails closed (no mount)", withServer(async (server) => {
+  const { json } = await rpc(server, {
+    jsonrpc: "2.0", id: 22, method: "tools/call",
+    params: { name: "mcpmarket_request_register", arguments: { serverId: "does-not-exist" } },
+  }, taskJwt({ allowed_tools: ["mcpmarket.request_register"] }));
+  assert.equal(json.result.isError, false);
+  assert.match(json.result.content[0].text, /unknown_server/);
 }));

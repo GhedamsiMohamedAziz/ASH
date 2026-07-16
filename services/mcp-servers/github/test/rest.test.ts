@@ -114,3 +114,56 @@ test("invalid repo is rejected before any request (path-injection guard)", async
     (e: any) => e.code === "E_VALIDATION",
   );
 });
+
+// ─────────────────────────────────────────────────── createOrUpdateFile (real commit, write) ──
+// A method-aware mock: the GET resolves the current sha (or 404 = new file), the PUT does the write.
+function writeMock(getStatus: number, getBody: unknown, putBody: unknown, sink: any): typeof fetch {
+  return (async (url: string, init: any) => {
+    (sink.calls ??= []).push({ url, method: init?.method, body: init?.body });
+    if (init?.method === "PUT") {
+      const t = JSON.stringify(putBody);
+      return { ok: true, status: 200, text: async () => t } as any;
+    }
+    const t = typeof getBody === "string" ? getBody : JSON.stringify(getBody);
+    return { ok: getStatus >= 200 && getStatus < 300, status: getStatus, text: async () => t } as any;
+  }) as unknown as typeof fetch;
+}
+
+test("createOrUpdateFile CREATES a new file (404 lookup → no sha) and commits base64 content", async () => {
+  const sink: any = {};
+  const backend = new RestBackend({ fetchImpl: writeMock(404, { message: "Not Found" },
+    { commit: { sha: "c0ffee" }, content: { html_url: "https://github.com/acme/x/blob/main/docs/n.md" } }, sink) });
+  const r = (await new GithubMcp(backend).tools()["github.create_or_update_file"](
+    { repo: "acme/x", path: "docs/n.md", content: "hello", message: "add notes" }, ctx)) as any;
+  assert.equal(r.action, "created");
+  assert.equal(r.commit, "c0ffee");
+  const put = sink.calls.find((c: any) => c.method === "PUT");
+  const body = JSON.parse(put.body);
+  assert.equal(body.message, "add notes");
+  assert.equal(Buffer.from(body.content, "base64").toString("utf8"), "hello"); // content is base64-encoded
+  assert.equal(body.sha, undefined); // create path sends NO sha
+  assert.match(put.url, /\/repos\/acme\/x\/contents\/docs\/n\.md$/);
+});
+
+test("createOrUpdateFile UPDATES an existing file (lookup sha → PUT carries it)", async () => {
+  const sink: any = {};
+  const backend = new RestBackend({ fetchImpl: writeMock(200, { sha: "oldsha" },
+    { commit: { sha: "newsha" }, content: { html_url: "u" } }, sink) });
+  const r = (await new GithubMcp(backend).tools()["github.create_or_update_file"](
+    { repo: "acme/x", path: "a.md", content: "v2", message: "update" }, ctx)) as any;
+  assert.equal(r.action, "updated");
+  assert.equal(r.commit, "newsha");
+  const put = sink.calls.find((c: any) => c.method === "PUT");
+  assert.equal(JSON.parse(put.body).sha, "oldsha"); // update MUST include the current blob sha
+});
+
+test("createOrUpdateFile propagates a non-404 lookup failure (fail-closed, no blind write)", async () => {
+  const sink: any = {};
+  // 401 on the sha lookup must NOT be swallowed as 'create' — it surfaces as a named error.
+  const backend = new RestBackend({ fetchImpl: writeMock(401, { message: "bad creds" }, {}, sink) });
+  await assert.rejects(
+    () => new GithubMcp(backend).tools()["github.create_or_update_file"](
+      { repo: "acme/x", path: "a.md", content: "x", message: "m" }, ctx),
+    (e: any) => e instanceof GithubApiError && e.code === "E_CONN_TOKEN_EXPIRED");
+  assert.equal(sink.calls.some((c: any) => c.method === "PUT"), false); // never attempted the write
+});

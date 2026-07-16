@@ -12,6 +12,17 @@ import { verify, JWTError, type VerifyOpts } from "../../../packages/shared-ts/s
 import { scrub } from "./dlp.ts";
 import { taintStoreFromEnv, type TaintStore, type ToolMeta } from "./taint.ts";
 
+// AuthZ matcher (§9.4 + autolearn). A tool is allowed if it is listed verbatim OR matches a
+// trailing-`*` wildcard entry (prefix match). The ONLY wildcard the platform mints is
+// "mcpmarket_*", which authorizes tools the agent auto-mounted from the CURATED marketplace catalog
+// — each mount is SSRF- + tool-cap-guarded at registration, and every mounted tool carries SAFE_META
+// taint. Exact match stays the norm for every first-party connector; the wildcard is opt-in per
+// token (a token without it is unaffected), never implicit — so this cannot broaden a normal token.
+export function toolAllowed(allowed: string[], tool: string): boolean {
+  if (allowed.includes(tool)) return true;
+  return allowed.some((a) => a.length > 1 && a.endsWith("*") && tool.startsWith(a.slice(0, -1)));
+}
+
 export interface ToolCall {
   tool: string; // e.g. "github.create_pr"
   args: Record<string, unknown>;
@@ -118,8 +129,8 @@ export class McpGateway {
     const meta = this.meta.get(req.tool);
 
     // Defense in depth: even though the Prompt Layer computed allowed_tools, the
-    // Gateway re-checks (§9.4). Fail-closed if the tool is not allowed.
-    if (!allowed.includes(req.tool)) {
+    // Gateway re-checks (§9.4). Fail-closed if the tool is not allowed (wildcard-aware — see toolAllowed).
+    if (!toolAllowed(allowed, req.tool)) {
       this.record(mkAudit(actor, onBehalf, req.tool, "denied", [], "tool not in allowed_tools"));
       return { status: "denied", code: "E_PERM_TOOL_DENIED", reason: "tool not allowed" };
     }

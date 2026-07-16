@@ -16,8 +16,10 @@ import type { AllowListResolver } from "../../mcp-servers/browser/src/ssrf.ts";
 import { CredentialResolver, InMemoryVault, CredentialMissing, BackendCoreTokenStore } from "./vault.ts";
 import { verifyES256, type VerifyOpts } from "../../../packages/shared-ts/src/jwt.ts";
 import { ReloadingJwks, DEFAULT_JWKS_RELOAD_SECONDS } from "./jwks-reload.ts";
-import { handleMcpRpc, bearer } from "./mcp.ts";
-import { MCPMARKET_META_HANDLERS } from "./remote-mcp.ts";
+import { handleMcpRpc, bearer, registerDynamicTools, type McpToolDef } from "./mcp.ts";
+import {
+  mcpmarketSearchHandler, MCPMARKET_META, registerRemoteServer, mcpmarketCatalog,
+} from "./remote-mcp.ts";
 
 // Module-level Vault + resolver: the ONE credential store shared by the gateway's per-call
 // injection (resolveCredential) and the HTTP connect surface (POST /v1/connect). Storing a token
@@ -124,6 +126,10 @@ const GH_META: Record<string, { ingestsUntrusted: boolean; egressClass: string }
   "github.list_issues": { ingestsUntrusted: true, egressClass: "none" },
   "github.create_pr": { ingestsUntrusted: false, egressClass: "public" },
   "github.merge_pr": { ingestsUntrusted: false, egressClass: "public" },
+  // Write a file = a real commit. egressClass "public": if the turn ingested untrusted content, the
+  // gateway taint gate blocks/approval-gates it (can't exfiltrate untrusted data into a repo). Also
+  // require_approval by policy — the write never lands without a human OK.
+  "github.create_or_update_file": { ingestsUntrusted: false, egressClass: "public" },
 };
 
 // GitHub READ surface (§17.6.2): repo/issue/PR/commit metadata is user-influenced content pulled INTO
@@ -436,11 +442,40 @@ export function buildGateway(
   for (const [name, meta] of Object.entries(NOTION_META)) {
     gw.register(name, stringifyHandler(notionTools[name]), meta);
   }
-  // mcpmarket autolearn meta-tools (mcpmarket.search / request_register). request_register only
-  // RAISES an approval — a human/admin approves before any remote server is actually mounted.
-  for (const [name, { handler, meta }] of Object.entries(MCPMARKET_META_HANDLERS)) {
-    gw.register(name, handler, meta);
-  }
+  // mcpmarket autolearn — AUTONOMOUS (user directive). `search` is a read-only catalog lookup;
+  // `request_register` now ACTUALLY mounts the chosen curated-catalog server with no human approval,
+  // so the agent self-connects a skill. Safety is kept by AUTOMATIC guardrails that need no prompt:
+  // the catalog is a committed allowlist, registerRemoteServer runs SSRF validation + a
+  // MAX_REMOTE_TOOLS cap, and every mounted tool carries SAFE_META taint. Mounted tools are recorded
+  // in the MCP catalog (registerDynamicTools) so tools/list surfaces them and tools/call routes them;
+  // a token still needs "mcpmarket_*" in allowed_tools to see/use them (wildcard authz, toolAllowed).
+  gw.register("mcpmarket.search", mcpmarketSearchHandler, MCPMARKET_META["mcpmarket.search"]);
+  const mcpmarketRegisterHandler: ToolHandler = async (args) => {
+    const serverId = String((args as { serverId?: unknown }).serverId ?? "");
+    const entry = mcpmarketCatalog().find((e) => e.id === serverId);
+    if (!entry) return JSON.stringify({ status: "unknown_server", serverId });
+    try {
+      const result = await registerRemoteServer(
+        gw, { id: entry.id, name: entry.name, mcpUrl: entry.mcpUrl });
+      const defs: McpToolDef[] = result.tools.map((t) => ({
+        name: t.alias,
+        gwTool: t.gwTool,
+        description: t.description ?? `${entry.name}: ${t.remoteName}`,
+        inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
+      }));
+      registerDynamicTools(defs);
+      return JSON.stringify({
+        status: "connected", server: entry.id, tools: defs.map((d) => d.name),
+        note: "Skill connected. Its tools are available from your NEXT message.",
+      });
+    } catch (e) {
+      // SSRF block, tool-cap, or a dead/unauthenticated server all land here — reported to the agent,
+      // never thrown into the turn (fail-closed: no partial mount, nothing added to the catalog).
+      return JSON.stringify({ status: "error", server: entry.id, reason: String((e as Error)?.message ?? e) });
+    }
+  };
+  gw.register("mcpmarket.request_register", mcpmarketRegisterHandler,
+              MCPMARKET_META["mcpmarket.request_register"]);
   return gw;
 }
 

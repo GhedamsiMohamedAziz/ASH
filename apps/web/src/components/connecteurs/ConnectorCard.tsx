@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { Check, Loader2, Plug, XCircle } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { authToken } from "@/auth";
 import { identityTypeLabel } from "@/pages";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -99,7 +100,12 @@ export function ConnectorCard({
               variant="outline"
               className="w-fit"
               onClick={() => {
-                window.location.href = `/api/v1/connections/${connection.provider}/start`;
+                // A full-page nav can't carry the Authorization header, so pass the bearer token as
+                // ?auth=<jwt> — /start verifies it and binds the real logged-in user into the signed
+                // OAuth state, so the connection is stored under this user (not the dev fallback).
+                const t = authToken();
+                const q = t ? `?auth=${encodeURIComponent(t)}` : "";
+                window.location.href = `/api/v1/connections/${connection.provider}/start${q}`;
               }}
             >
               <Plug className="size-3.5" aria-hidden /> Se connecter avec {connection.label}

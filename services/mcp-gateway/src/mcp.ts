@@ -7,6 +7,7 @@
 // taskJwt. Dependency-free — node stdlib plus the framing — and wired into the real server's auth path,
 // never a parallel one. Proven end-to-end by tests/integration/test_gateway_e2e.py (opencode → /mcp).
 import type { McpGateway } from "./gateway.ts";
+import { toolAllowed } from "./gateway.ts";
 import { MCPMARKET_MCP_TOOLS } from "./remote-mcp.ts";
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -76,6 +77,22 @@ export const MCP_TOOLS: McpToolDef[] = [
       type: "object",
       properties: { repo: { type: "string" }, number: { type: "number" } },
       required: ["repo", "number"],
+    },
+  },
+  {
+    name: "github_create_or_update_file",
+    gwTool: "github.create_or_update_file",
+    description: "Create or update a file in a GitHub repository (a real commit) through the Axone MCP Gateway. Approval-gated — a human must approve before the write lands.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/name." },
+        path: { type: "string", description: "File path within the repo, e.g. docs/notes.md." },
+        content: { type: "string", description: "Full new file content (UTF-8)." },
+        message: { type: "string", description: "Commit message." },
+        branch: { type: "string", description: "Target branch (default: the repo's default branch)." },
+      },
+      required: ["repo", "path", "content", "message"],
     },
   },
   // GitHub READ surface (real per-user OAuth token via the Vault). All read-only, egressClass "none".
@@ -492,10 +509,32 @@ export const MCP_TOOLS: McpToolDef[] = [
       required: ["id"],
     },
   },
-  // mcpmarket autolearn meta-tools (mcpmarket.search / request_register). Gated by policy:
-  // search=allow, request_register=require_approval. tools/call routes gwTool → gw.call.
+  // mcpmarket autolearn meta-tools (mcpmarket_search / mcpmarket_request_register). Policy: both
+  // allow (autonomous autolearn). tools/call routes gwTool → gw.call.
   ...MCPMARKET_MCP_TOOLS,
 ];
+
+// Tools the agent AUTO-MOUNTED from the marketplace at runtime (autolearn). registerRemoteServer
+// (via the mcpmarket_request_register handler in server.ts) mounts a server's forwarding handlers on
+// the gateway AND records their opencode-facing defs here, so tools/list surfaces them and tools/call
+// can route them — no gateway restart, no static-catalog edit. In-memory: a gateway restart clears
+// them (the agent re-registers). A token still only SEES/CALLS them if its allowed_tools authorizes
+// the gwTool (the platform mints "mcpmarket_*" for this), and the gateway's SAFE_META taint + the
+// forwarding handler's SSRF-guarded mount still apply to every call.
+export const DYNAMIC_MCP_TOOLS: McpToolDef[] = [];
+
+// Idempotently add auto-mounted tool defs (dedupe by opencode-facing name). Called from server.ts's
+// register handler after registerRemoteServer resolves.
+export function registerDynamicTools(defs: McpToolDef[]): void {
+  for (const d of defs) {
+    if (!DYNAMIC_MCP_TOOLS.some((x) => x.name === d.name)) DYNAMIC_MCP_TOOLS.push(d);
+  }
+}
+
+// The full callable/listable catalog = static first-party tools + runtime auto-mounted ones.
+function catalog(): McpToolDef[] {
+  return [...MCP_TOOLS, ...DYNAMIC_MCP_TOOLS];
+}
 
 // Extract the raw TASK JWT from an Authorization header. Empty string when absent/malformed → the
 // gateway then fails closed (E_AUTH_INVALID_TOKEN), never a bypass.
@@ -538,7 +577,7 @@ export async function handleMcpRpc(gw: McpGateway, msg: any, taskJwt: string): P
         error: { code: -32001, message: "E_AUTH_INVALID_TOKEN", data: { code: "E_AUTH_INVALID_TOKEN" } },
       };
     }
-    const tools = MCP_TOOLS.filter((t) => allowed.includes(t.gwTool)).map((t) => ({
+    const tools = catalog().filter((t) => toolAllowed(allowed, t.gwTool)).map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -549,7 +588,7 @@ export async function handleMcpRpc(gw: McpGateway, msg: any, taskJwt: string): P
   if (method === "tools/call") {
     const name = params?.name;
     const args = (params?.arguments ?? {}) as Record<string, unknown>;
-    const def = MCP_TOOLS.find((t) => t.name === name);
+    const def = catalog().find((t) => t.name === name);
     if (!def) {
       return {
         jsonrpc: "2.0",

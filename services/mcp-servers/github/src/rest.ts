@@ -133,6 +133,37 @@ export class RestBackend implements GithubBackend {
     return { merged: !!data.merged, sha: data.sha ?? "" };
   }
 
+  // Create OR update a file = a REAL commit (Contents API PUT). To update, GitHub requires the
+  // current blob sha, so we GET it first; a 404 there means the file doesn't exist yet → create (no
+  // sha). Content is base64-encoded per the API. Writes to the default branch unless `branch` is set.
+  // This is a mutation on the caller's real repo — it is approval-gated by policy (require_approval)
+  // and egressClass "public" (taint-gated on a turn that ingested untrusted content), enforced by the
+  // gateway BEFORE this runs.
+  async createOrUpdateFile(
+    repo: string, path: string, content: string, message: string, ctx: ToolContext, branch?: string,
+  ): Promise<{ action: "created" | "updated"; commit: string; url: string; path: string }> {
+    const rp = RestBackend.repoPath(repo);
+    const ep = RestBackend.encPath(path);
+    let sha: string | undefined;
+    let action: "created" | "updated" = "created";
+    try {
+      const ref = branch ? `?ref=${encodeURIComponent(branch)}` : "";
+      const existing = await this.call("GET", `/repos/${rp}/contents/${ep}${ref}`, ctx);
+      if (existing && typeof existing.sha === "string") { sha = existing.sha; action = "updated"; }
+    } catch (e) {
+      // 404 → file is new (create). Any other error (401/403/…) is a real failure — propagate it.
+      if (!(e instanceof GithubApiError && e.status === 404)) throw e;
+    }
+    const body: Record<string, unknown> = {
+      message,
+      content: Buffer.from(content, "utf8").toString("base64"),
+    };
+    if (branch) body.branch = branch;
+    if (sha) body.sha = sha;
+    const res = await this.call("PUT", `/repos/${rp}/contents/${ep}`, ctx, body);
+    return { action, commit: res.commit?.sha ?? "", url: res.content?.html_url ?? "", path };
+  }
+
   async listIssues(repo: string, ctx: ToolContext, state = "open"): Promise<Array<{ number: number; title: string }>> {
     const data = await this.call("GET", `/repos/${RestBackend.repoPath(repo)}/issues?state=${encodeURIComponent(state)}`, ctx);
     // The issues endpoint returns PRs too; drop them (real issues have no pull_request field).

@@ -29,6 +29,7 @@ TASK_JWT_TTL = 900  # 15 min (§13.4)
 
 # Candidate tool universe evaluated against tool_policies each turn (§9.4).
 _DEFAULT_TOOLS = ["github.search", "github.read", "github.create_pr", "github.merge_pr",
+                  "github.create_or_update_file",
                   "github.list_repos", "github.list_issues", "github.get_issue",
                   "github.list_pull_requests", "github.get_pull_request",
                   "github.search_repositories", "github.search_issues", "github.list_commits",
@@ -44,6 +45,8 @@ _DEFAULT_POLICIES = [
     Policy("org_1", "member", "github.read", "allow"),
     Policy("org_1", "member", "github.create_pr", "allow"),
     Policy("org_1", "member", "github.merge_pr", "require_approval", "tech-leads"),
+    # Writing a file = a real commit to the user's repo → human-approval-gated (§13.3).
+    Policy("org_1", "member", "github.create_or_update_file", "require_approval", None),
     Policy("org_1", "member", "database.read", "allow"),
     Policy("org_1", "member", "database.write", "deny"),
     Policy("org_1", "member", "scheduler.list_crons", "allow"),
@@ -57,9 +60,13 @@ _DEFAULT_POLICIES = [
     Policy("org_1", "member", "github.search_repositories", "allow"),
     Policy("org_1", "member", "github.search_issues", "allow"),
     Policy("org_1", "member", "github.list_commits", "allow"),
-    # mcpmarket autolearn: search freely; registering a server needs approval (guardrail).
+    # mcpmarket autolearn: fully autonomous (§ user directive) — search AND register run without a
+    # human-approval prompt. Safety is kept by the AUTOMATIC guardrails that need no prompt: the
+    # catalog is a curated committed allowlist, registerRemoteServer runs SSRF validation + a
+    # tool-count cap, and mounted tools carry SAFE_META taint. So the agent can self-connect a
+    # curated skill, but a malicious URL still can't reach the internal network or exfiltrate.
     Policy("org_1", "member", "mcpmarket.search", "allow"),
-    Policy("org_1", "member", "mcpmarket.request_register", "require_approval", None),
+    Policy("org_1", "member", "mcpmarket.request_register", "allow"),
 ]
 _DEFAULT_ENGINE = PolicyEngine(_DEFAULT_POLICIES)
 

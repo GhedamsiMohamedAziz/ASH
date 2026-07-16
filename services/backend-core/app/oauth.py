@@ -41,12 +41,12 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from olma_shared import jwt
 
-from .identity import current_identity
+from .identity import current_identity, verify_token
 
 # --------------------------------------------------------------- provider table
 @dataclass(frozen=True)
@@ -239,14 +239,27 @@ router = APIRouter(prefix="/connections", tags=["connections"])
 
 
 @router.get("/{provider}/start")
-def start(provider: str, identity: tuple[str, str] = Depends(current_identity)) -> RedirectResponse:
+def start(provider: str, auth: str | None = Query(default=None),
+          identity: tuple[str, str] = Depends(current_identity)) -> RedirectResponse:
     """Kick off the OAuth handshake: resolve the caller, build the provider authorize URL with a
-    signed state, and 302 the browser to the provider (a full-page nav completes the redirect)."""
+    signed state, and 302 the browser to the provider (a full-page nav completes the redirect).
+
+    Identity threading (§13.4): the SPA authenticates with a Bearer token, but this endpoint is
+    reached by a full-page navigation that CANNOT carry that header — so the browser would otherwise
+    arrive as the header-less dev user and the token would be stored under the wrong identity. The SPA
+    therefore passes its token as `?auth=<jwt>`; we verify it here and bind THAT user into the signed
+    state, so the callback stores the connection under the real logged-in user. Falls back to the
+    header/dev identity when no `auth` is supplied (header-less callers, tests) — purely additive."""
     cfg = _provider(provider)
     client_id, _secret = _client_creds(cfg)
     if not client_id:
         raise HTTPException(status_code=400, detail="provider OAuth not configured")
     user_id, _org_id = identity
+    if auth:
+        try:
+            user_id = verify_token(auth).get("sub") or user_id
+        except Exception:  # noqa: BLE001 — an invalid ?auth token falls back to the header/dev identity
+            pass
     state = sign_state(user_id, provider)
     params = {
         "client_id": client_id,
