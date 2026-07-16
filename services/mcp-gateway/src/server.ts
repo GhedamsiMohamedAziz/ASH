@@ -455,8 +455,17 @@ export function buildGateway(
     const entry = mcpmarketCatalog().find((e) => e.id === serverId);
     if (!entry) return JSON.stringify({ status: "unknown_server", serverId });
     try {
+      // Dev-only SSRF opt-out for EXPLICITLY allow-listed hosts (e.g. a localhost demo skill). The
+      // loopback/RFC1918 blocks in validateUrl are otherwise UNCONDITIONAL, so a local example server
+      // can't be mounted without this. Off by default (empty env) → SSRF stays fully on for EVERY
+      // catalog server, including the real ones. Prod never sets MCPMARKET_DEV_ALLOW_HOSTS.
+      let host = "";
+      try { host = new URL(entry.mcpUrl).hostname; } catch { /* invalid url → validateUrl rejects it */ }
+      const devHosts = (process.env.MCPMARKET_DEV_ALLOW_HOSTS ?? "")
+        .split(",").map((h) => h.trim()).filter(Boolean);
       const result = await registerRemoteServer(
-        gw, { id: entry.id, name: entry.name, mcpUrl: entry.mcpUrl });
+        gw, { id: entry.id, name: entry.name, mcpUrl: entry.mcpUrl },
+        { skipSsrf: devHosts.includes(host) });
       const defs: McpToolDef[] = result.tools.map((t) => ({
         name: t.alias,
         gwTool: t.gwTool,

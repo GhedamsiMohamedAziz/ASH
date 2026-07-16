@@ -30,5 +30,13 @@
     "mcpUrl": "https://mcp.weather.example/mcp",
     "category": "data",
     "needsAuth": false
+  },
+  {
+    "id": "textutils",
+    "name": "Text Utilities MCP",
+    "description": "Word count, reverse text, uppercase. A no-auth example skill for local autolearn demos (run services/mcp-servers/demo-utils/server.ts).",
+    "mcpUrl": "http://127.0.0.1:4100/mcp",
+    "category": "data",
+    "needsAuth": false
   }
 ]
