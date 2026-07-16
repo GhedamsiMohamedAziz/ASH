@@ -12,6 +12,8 @@ paths = [
   '''services/.*/keys/.*''',                 # runtime dev keys (gitignored)
   '''.*/test/fixtures/.*\.test\.pem''',      # TEST-ONLY ES256 TASK JWT keypair (§13.4 seam)
   '''evals/.*''',                            # adversarial corpus
+  '''\.env\.example''',                      # template placeholders (REPLACE_WITH_…), never real
+  '''.*/\.pytest_cache/.*''',                # generated pytest cache echoes test-fixture ids, not source
 ]
 regexes = [
   '''ghp_a{36}''',                           # obvious fake GitHub token in tests
