@@ -38,3 +38,23 @@ def is_cancelled(conversation_id: str) -> bool:
 
 def clear_cancel(conversation_id: str) -> None:
     _cancelled.discard(conversation_id)
+
+
+# In-process human-approval signal for OpenCode-native permission requests (§13.3). When OpenCode
+# pauses a gated tool call it emits a permission event; the runner surfaces an approval card and
+# awaits the user's decision here, which `POST /approve` sets (keyed by OpenCode's per_… id). Mirrors
+# the cancel registry — no store coupling. Prod: a Redis key with a TTL keyed by the permission id.
+_perm_decisions: dict[str, str] = {}
+
+
+def set_permission_decision(permission_id: str, decision: str) -> None:
+    """decision is 'approve' or 'deny' (the /approve route's ApprovalDecision.decision)."""
+    _perm_decisions[permission_id] = decision
+
+
+def get_permission_decision(permission_id: str) -> str | None:
+    return _perm_decisions.get(permission_id)
+
+
+def clear_permission_decision(permission_id: str) -> None:
+    _perm_decisions.pop(permission_id, None)

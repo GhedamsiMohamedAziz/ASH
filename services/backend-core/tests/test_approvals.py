@@ -126,6 +126,40 @@ def test_http_request_then_approve(client):
     assert ok.json()["status"] == "approved"
 
 
+def test_http_approve_opencode_permission_relays_without_replay(client):
+    """A per_-prefixed id is an OpenCode-native permission: /approve records the decision on the shared
+    signal (for the runner to relay to OpenCode) and must NOT create an ApprovalManager entry or replay
+    the tool through the gateway — that would double-run the write (OpenCode runs it on grant)."""
+    from app.bus import get_permission_decision, clear_permission_decision
+    from app.main import approvals
+    conv = client.post("/api/v1/conversations", json={}).json()
+    cid = conv["id"]
+    perm_id = "per_testfixture0001"
+    clear_permission_decision(perm_id)
+    r = client.post(f"/api/v1/conversations/{cid}/approve",
+                    json={"approval_id": perm_id, "decision": "approve"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "approved"
+    assert get_permission_decision(perm_id) == "approve"   # relayed to the runner's poll
+    assert approvals.get(perm_id) is None                  # no ApprovalManager/replay path taken
+    clear_permission_decision(perm_id)
+
+
+def test_http_deny_opencode_permission(client):
+    """Deny is relayed as a 'deny' decision — the runner replies 'reject' to OpenCode, no write lands."""
+    from app.bus import get_permission_decision, clear_permission_decision
+    conv = client.post("/api/v1/conversations", json={}).json()
+    cid = conv["id"]
+    perm_id = "per_testfixture0002"
+    clear_permission_decision(perm_id)
+    r = client.post(f"/api/v1/conversations/{cid}/approve",
+                    json={"approval_id": perm_id, "decision": "deny"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "denied"
+    assert get_permission_decision(perm_id) == "deny"
+    clear_permission_decision(perm_id)
+
+
 def test_http_double_resolve_conflicts(client):
     conv = client.post("/api/v1/conversations", json={}).json()
     cid = conv["id"]

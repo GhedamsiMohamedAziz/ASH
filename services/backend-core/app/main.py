@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from olma_errors import envelope
 from olma_shared.bus import Message as BusMessage
 
-from .bus import SUBJECT_INBOUND, bus, mark_cancelled
+from .bus import SUBJECT_INBOUND, bus, mark_cancelled, set_permission_decision
 from .models import (
     AgentEvent,
     AgentEventType,
@@ -717,6 +717,17 @@ def approve(
     if store.get(conversation_id) is None:
         raise _conv_404(conversation_id)
     approver, _org_id = identity
+    # OpenCode permission relay (§13.3): a "per_"-prefixed id is an OpenCode-native permission the
+    # runner is awaiting (NOT an ApprovalManager entry). Record the decision on the shared signal so
+    # the drive loop replies to OpenCode; the tool then executes INSIDE OpenCode's turn — we must NOT
+    # re-invoke it through the gateway here (that would double-run the write). No replay on this path.
+    if decision.approval_id.startswith("per"):
+        set_permission_decision(decision.approval_id, decision.decision)
+        status = "approved" if decision.decision == "approve" else "denied"
+        store.record_event(conversation_id, AgentEventType.tool_result, {
+            "action": "approval.decision", "approval_id": decision.approval_id,
+            "status": status, "approver": approver})
+        return {"status": status, "approver": approver}
     try:
         appr = approvals.resolve(decision.approval_id, decision=decision.decision,
                                  approver=approver, now=_clock())

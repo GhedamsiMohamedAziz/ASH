@@ -25,7 +25,8 @@ from pathlib import Path
 
 from olma_shared.bus import Message
 
-from .bus import agent_events_subject, bus, clear_cancel, is_cancelled
+from .bus import (agent_events_subject, bus, clear_cancel, is_cancelled,
+                  get_permission_decision, clear_permission_decision)
 
 PROMPT_LAYER_URL = os.getenv("PROMPT_LAYER_URL")
 LLM_PROXY_URL = os.getenv("LLM_PROXY_URL")
@@ -46,6 +47,10 @@ OPENCODE_TURN_TIMEOUT = float(os.getenv("OPENCODE_TURN_TIMEOUT", "120"))
 # events before ending the drive loop — bounds a delayed/absent session.idle WITHOUT truncating
 # the text.delta stream (deltas arrive right after the POST returns; session.idle after them).
 OPENCODE_IDLE_GRACE = float(os.getenv("OPENCODE_IDLE_GRACE", "8"))
+# How long a human has to Approve/Deny a gated tool before we fail-closed (reject) — bounded so a
+# never-answered permission can't wedge the turn forever. Must be < OPENCODE_TURN_TIMEOUT (which wraps
+# the whole drive), so the deploy sets a turn timeout generous enough to cover a real approval wait.
+OPENCODE_PERMISSION_TIMEOUT = float(os.getenv("OPENCODE_PERMISSION_TIMEOUT", "300"))
 
 # Real tool-use loop (§10, §12). An AGENTIC-class turn (plan.class != chat_simple) drives the model
 # in a loop: the model emits tool_use blocks, the runner executes each via the Gateway, feeds the
@@ -504,6 +509,12 @@ async def _opencode_drive(http, base: str, session_id: str, conversation_id: str
                     part = props.get("part") or {}
                     if part.get("type") == "tool":
                         await _map_tool_part(conversation_id, part, seen_call, seen_done)
+                elif etype in ("permission.asked", "permission.v2.asked"):
+                    # A gated tool paused for human approval (§13.3). Surface the approval card, wait
+                    # for the Approve/Deny, and reply to OpenCode so the tool runs (or is rejected) —
+                    # all INSIDE this turn. The prompt POST stays in-flight (OpenCode is blocked here),
+                    # so pausing the event loop to await the decision loses no events.
+                    await _handle_permission(http, base, conversation_id, props)
                 elif etype == "session.idle":
                     # Terminal ONLY for this session — an idle carrying a missing/foreign
                     # sessionID must not end another turn's drive loop (the generic filter above
@@ -571,6 +582,47 @@ async def _map_tool_part(conversation_id: str, part: dict, seen_call: set, seen_
             await _emit(conversation_id, "agent.tool.result",
                         {"tool": tool, "status": "error",
                          "result_summary": str(state.get("error") or "")[:80]})
+
+
+async def _handle_permission(http, base: str, conversation_id: str, props: dict) -> None:
+    """Relay one OpenCode permission request to the human and back (§13.3).
+
+    Surfaces the approval card keyed by OpenCode's own permission id (per_…) so the existing UI card
+    +`POST /approve` drive it with no UI change, awaits the decision (bounded, fail-closed to reject),
+    then replies to OpenCode: 'once' → the tool runs this turn; 'reject' → it does not."""
+    perm_id = props.get("id")
+    sid = props.get("sessionID")
+    if not perm_id or not sid:
+        return
+    # v1 events carry {permission, patterns, tool}; v2 carry {action, resources}. Surface either.
+    tool = props.get("permission") or props.get("action") or "action"
+    resources = props.get("patterns") or props.get("resources") or []
+    args_summary = ", ".join(str(r) for r in resources)[:80]
+    await _emit(conversation_id, "agent.approval.needed",
+                {"approval_id": perm_id, "tool": tool, "args_summary": args_summary})
+    decision = await _await_permission_decision(conversation_id, perm_id)
+    response = "once" if decision == "approve" else "reject"
+    try:
+        await http.post(f"{base}/session/{sid}/permissions/{perm_id}", json={"response": response})
+    except Exception:  # noqa: BLE001 — a failed reply just lets OpenCode's own timeout fail the call
+        pass
+    finally:
+        clear_permission_decision(perm_id)
+
+
+async def _await_permission_decision(conversation_id: str, perm_id: str) -> str:
+    """Poll the shared signal for the Approve/Deny (set by POST /approve) until it lands, the turn is
+    cancelled, or the bound elapses. Fail-closed: a never-answered / cancelled request → 'deny'."""
+    waited, step = 0.0, 0.5
+    while waited < OPENCODE_PERMISSION_TIMEOUT:
+        if is_cancelled(conversation_id):
+            return "deny"
+        d = get_permission_decision(perm_id)
+        if d is not None:
+            return d
+        await asyncio.sleep(step)
+        waited += step
+    return "deny"
 
 
 async def _opencode_abort(http, base: str, session_id: str) -> None:
