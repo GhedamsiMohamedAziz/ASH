@@ -100,13 +100,24 @@ export function Chat({ conversationId, locale = "fr", demo = false, onNew }:
 
   useEffect(() => {
     if (demo) return;
-    try {
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${proto}://${location.host}/api/v1/conversations/${conversationId}/stream`);
+    let ws: WebSocket | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false; // set on cleanup (unmount / conversation change) so we stop reconnecting
+
+    const connect = () => {
+      if (stopped) return;
+      try {
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(`${proto}://${location.host}/api/v1/conversations/${conversationId}/stream`);
+      } catch {
+        if (!stopped) retry = setTimeout(connect, 1500); // couldn't even construct → retry
+        return;
+      }
       ws.onopen = () => {
         setConnected(true);
-        // Resume from where we left off (§2.3): server skips/replays are deduped below.
-        ws.send(JSON.stringify({ type: "subscribe", last_seq: lastSeqRef.current }));
+        // Resume from where we left off (§2.3): server skips/replays are deduped below. On a
+        // reconnect this catches the turn up from lastSeq, so a backend restart/blip is invisible.
+        ws!.send(JSON.stringify({ type: "subscribe", last_seq: lastSeqRef.current }));
       };
       ws.onmessage = (m) => {
         const ev = JSON.parse(m.data) as AgentEvent;
@@ -122,10 +133,21 @@ export function Chat({ conversationId, locale = "fr", demo = false, onNew }:
             setLatencies((prev) => ({ ...prev, [idx]: performance.now() - start }));
         }
       };
-      ws.onclose = () => setConnected(false);
-      ws.onerror = () => setConnected(false);
-      return () => ws.close();
-    } catch { /* backend not up */ }
+      // Auto-reconnect: any close (backend restart, network blip) schedules a retry, so the chat
+      // recovers on its own instead of getting stuck at "hors ligne" until a manual reload.
+      ws.onclose = () => {
+        setConnected(false);
+        if (!stopped) retry = setTimeout(connect, 1500);
+      };
+      ws.onerror = () => { try { ws?.close(); } catch { /* onclose drives the reconnect */ } };
+    };
+
+    connect();
+    return () => {
+      stopped = true;
+      if (retry) clearTimeout(retry);
+      ws?.close();
+    };
   }, [conversationId, demo]);
 
   const approve = (approvalId: string, decision: "approve" | "deny") =>
