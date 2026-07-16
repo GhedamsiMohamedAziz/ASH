@@ -22,6 +22,7 @@ from .classify import classify
 from .memory import MemoryStore
 from .memory_mcp import InMemoryTaint, MemoryMcp
 from .pipeline import GuardrailBlocked, build_task, reapprove_task_jwt
+from .policy import PolicyEngine, load_from_postgres
 
 app = FastAPI(title="olma prompt-layer", version="0.1.0")
 
@@ -40,6 +41,27 @@ if _redis_url:
 else:
     _taint = InMemoryTaint()
 memory = MemoryMcp(MemoryStore(recall_threshold=0.30), taint=_taint)
+
+# Per-org policy engines (§9.4, tenant isolation §17.6.2). When DATABASE_URL is set, each org's tool
+# matrix is loaded from Postgres (tool_policies) and cached, so a per-turn TASK JWT is authorized
+# against THAT org's real policies — never a shared/default set. Unset → build_task falls back to the
+# seeded default engine (org_1), keeping the offline dev/test path unchanged.
+_DATABASE_URL = os.getenv("DATABASE_URL")
+_org_engines: dict[str, PolicyEngine] = {}
+
+
+async def _engine_for_org(org_id: str) -> PolicyEngine | None:
+    """Load (and cache) an org's policy engine from Postgres. None when no DB is configured OR the org
+    has zero rows — the caller then uses the default engine, never another org's policies."""
+    if not (_DATABASE_URL and org_id):
+        return None
+    if org_id not in _org_engines:
+        try:
+            policies = await load_from_postgres(_DATABASE_URL, org_id)
+        except Exception:  # noqa: BLE001 — a DB blip must not wedge planning; fall back to the default
+            return None
+        _org_engines[org_id] = PolicyEngine(policies) if policies else None
+    return _org_engines[org_id]
 
 
 def _seed_memories() -> None:
@@ -121,11 +143,14 @@ def reapprove(body: ReapproveRequest) -> dict:
 
 
 @app.post("/v1/plan")
-def plan(body: PlanRequest):
+async def plan(body: PlanRequest):
     try:
+        # Tenant isolation (§9.4/§17.6.2): authorize against THIS org's own policy matrix, loaded from
+        # Postgres and cached. None (no DB / unseeded org) → build_task uses the seeded default engine.
+        engine = await _engine_for_org(body.inbound.get("org_id", ""))
         # Pass the shared taint ledger so a webhook/untrusted inbound pre-taints its task_id
         # (§15.8/§17.6.3): the Gateway then reclasses egress on the resulting turn.
-        task = build_task(body.inbound, role=body.role, taint=_taint)
+        task = build_task(body.inbound, role=body.role, taint=_taint, engine=engine)
     except GuardrailBlocked as exc:
         return JSONResponse(status_code=422,
                             content=envelope(exc.code, trace_id=uuid.uuid4().hex))

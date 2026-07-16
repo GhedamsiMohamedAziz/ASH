@@ -188,6 +188,12 @@ def build_task(inbound: dict, *, role: str = "member", task_id: str | None = Non
         from .team_mode import filter_team_tools
         candidate_tools = filter_team_tools(_DEFAULT_TOOLS)
     allowed, approval, _groups = eng.compute_tools(inbound["org_id"], role, candidate_tools)  # stage 4
+    # Autolearn grant (§ user directive): an org that may register a marketplace skill may also USE the
+    # tools it mounts, so authorize the mcpmarket_* wildcard. The Gateway matches it (toolAllowed) only
+    # for auto-mounted mcpmarket_<server>.<tool> names; it never broadens any first-party tool. Tied to
+    # the register permission so an org without autolearn gets no wildcard.
+    if "mcpmarket.request_register" in allowed and "mcpmarket_*" not in allowed:
+        allowed = [*allowed, "mcpmarket_*"]
     tier, profile = _route(c.cls, c.recurrence)  # stage 5 routing
     # webhook + scheduler are both non-interactive: no human in the loop, so require_approval
     # tools fail closed at run time (§15.8 / §9 intro). Only the interactive web/chat path can approve.
